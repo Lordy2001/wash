@@ -199,8 +199,15 @@ function renderTabs() {
     const x = document.createElement('button');
     x.className = 'x'; x.textContent = '×'; x.title = 'kill session';
     x.onclick = (e) => { e.stopPropagation(); killSession(s); };
-    t.append(x);
-    t.onclick = () => activate(s.id, true); // clicking a tab takes control of it
+    // control: this device types into the session (others watch)
+    const mine = o && hasControl(top(o));
+    const k = document.createElement('button');
+    k.className = 'ctl' + (mine ? ' mine' : '');
+    k.textContent = '⌨';
+    k.title = mine ? 'this device has control' : 'take control (the other device keeps watching)';
+    k.onclick = (e) => { e.stopPropagation(); takeControl(s.id); };
+    t.append(k, x);
+    t.onclick = () => activate(s.id);
     t.ondblclick = () => renameSession(s);
     bar.append(t);
   }
@@ -214,6 +221,12 @@ function setStatus(o, layer) {
   if (layer !== top(o)) return;
   const tab = document.querySelector(`.tab[data-id="${o.id}"] .st`);
   if (tab) tab.textContent = layer.status;
+  const k = document.querySelector(`.tab[data-id="${o.id}"] .ctl`);
+  if (k) {
+    const mine = hasControl(layer);
+    k.classList.toggle('mine', mine);
+    k.title = mine ? 'this device has control' : 'take control (the other device keeps watching)';
+  }
 }
 
 function showTop(o) {
@@ -222,9 +235,9 @@ function showTop(o) {
   if (app.active === o.id) requestAnimationFrame(() => { top(o).term.fit(); top(o).term.focus(); });
 }
 
-// activate shows session id. take (a click on its tab): this tab gets control,
-// and a device that had it keeps watching. Without take (page load) the
-// session is only controlled from here if no other device has it.
+// activate shows session id. Opening it here only gets control if no other
+// device has it, unless take (the tab's ⌨ button): then this device gets
+// control and the other keeps watching.
 function activate(id, take = false) {
   app.active = id;
   store.set('wash.active', id);
@@ -285,6 +298,18 @@ function openView(id, take = false) {
   return o;
 }
 
+// hasControl: this device is connected to the layer's session and controls it.
+const hasControl = (l) => l.ws.role === 'control' && /^(p2p|ws)/.test(l.status || '');
+
+// takeControl makes this device the one that types into session id.
+function takeControl(id) {
+  const o = app.open.get(id);
+  if (!o) { activate(id, true); return; }
+  top(o).ws.takeControl();
+  if (app.active !== id) activate(id);
+  else top(o).term.focus();
+}
+
 // showRole shows a bar over a session another device controls: it still
 // shows everything, but typing goes nowhere until you take control.
 function showRole(o) {
@@ -296,7 +321,7 @@ function showRole(o) {
     p.textContent = 'Watching: another device has control of this session.';
     const b = document.createElement('button');
     b.textContent = 'Take control';
-    b.onclick = () => { top(o).ws.takeControl(); top(o).term.focus(); };
+    b.onclick = () => takeControl(o.id);
     d.append(p, b);
     o.box.append(d);
     o.viewBar = d;

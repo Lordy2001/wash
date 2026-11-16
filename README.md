@@ -243,7 +243,7 @@ Ctrl+Shift+T opens a new session, Ctrl+Shift+PgUp/PgDn switch tabs.
 
 ```sh
 go test ./...                              # includes internal/e2e (needs ../wosh/bin/wosh or $WASH_TEST_WOSH)
-node --test web/test/term/*.test.mjs
+node --test web/test/term/*.test.mjs web/test/wosh/*.test.mjs
 ```
 
 The e2e test runs wash-web and washd with real wosh daemons, using a
@@ -266,8 +266,9 @@ purging pending keys after the TTL.
   at once. One of them controls it (keyboard and size); the others watch,
   with a "Watching" bar and a **Take control** button. Whoever has the
   session first keeps it: opening it on another device (or reloading the
-  page) only watches, unless nobody controls it. **Clicking a tab takes
-  control** of that session; the device that had it keeps watching. Control
+  page) only watches, unless nobody controls it. The **⌨ button** on a tab
+  (green when this device has control) takes control of that session; the
+  device that had it keeps watching. Clicking the tab itself only switches. Control
   is per session, so the desktop can type in one tab while the phone types
   in another. If the controlling device goes away for 10 s, the device that
   has watched longest gets control. Watchers see the output laid out for

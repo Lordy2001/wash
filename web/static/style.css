@@ -45,6 +45,9 @@ header button { padding: 3px 9px; font-size: 13px; }
 .tab .st { color: var(--dim); font-size: 11px; }
 .tab .x { padding: 0 6px; border: 0; background: none; color: var(--dim); font-size: 15px; line-height: 1; }
 .tab .x:hover { color: var(--err); }
+.tab .ctl { padding: 0 4px; border: 0; background: none; color: var(--dim); font-size: 13px; line-height: 1; opacity: 0.55; }
+.tab .ctl:hover { opacity: 1; color: var(--fg, #d8dee9); }
+.tab .ctl.mine { opacity: 1; color: #98c379; cursor: default; }
 #terms { flex: 1; position: relative; min-height: 0; background: #101317; }
 .view-box { position: absolute; inset: 0; }
 .term { position: absolute; inset: 4px 2px 2px 6px; }

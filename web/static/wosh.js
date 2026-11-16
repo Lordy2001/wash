@@ -500,8 +500,12 @@ export class WoshSession {
       this.inBuf = new Uint8Array(0); // typing here no longer goes anywhere
     } else if (was === 'view') {
       // the daemon follows this with an ack: continue from its input offset
+      // (keys typed before it arrives are sent then)
       this.synced = false; this.everSynced = false; this.inBuf = new Uint8Array(0);
+      this.flushPending = true;
+      // the screen was laid out for the other device: our size, then a repaint
       this.send(resizeFrame(this.size().cols, this.size().rows));
+      this.send(new Uint8Array([F.REDRAW]));
     }
     this.onState({ state: 'up', transport: this.tr && this.tr.kind, rtt: this.rtt });
   }
@@ -516,7 +520,7 @@ export class WoshSession {
   send(b) { if (this.tr) this.tr.send(b); }
 
   input(bytes) {
-    if (this.exited || this.role === 'view') return;
+    if (this.exited || this.role !== 'control') return;
     const prevEnd = this.inBase + this.inBuf.length;
     const nb = new Uint8Array(this.inBuf.length + bytes.length);
     nb.set(this.inBuf); nb.set(bytes, this.inBuf.length);
