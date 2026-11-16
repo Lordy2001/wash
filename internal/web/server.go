@@ -441,10 +441,18 @@ func (s *Server) takeCeremony(id, kind string) (*ceremony, bool) {
 
 // --- API ---------------------------------------------------------------------
 
+// servesCA: visitors that reach wash-web directly see its own CA (they need to
+// trust it). Behind a proxy the browser sees the proxy's public certificate,
+// so the hint would be wrong, and the CA (name-constrained to the internal
+// names) would only tell the public those names.
+func (s *Server) servesCA(r *http.Request) bool {
+	return s.cfg.CAFile != "" && !s.viaProxy(r)
+}
+
 // handleCA serves the CA certificate (public) so devices can trust the site:
 // browsers refuse passkeys on pages with certificate errors.
 func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
-	if s.cfg.CAFile == "" {
+	if !s.servesCA(r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -461,7 +469,7 @@ func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.sessionUser(r)
 	out := map[string]any{
-		"ca":           s.cfg.CAFile != "",
+		"ca":           s.servesCA(r),
 		"registration": map[bool]string{true: "open", false: "request"}[s.cfg.Registration],
 		"pending_ttl":  PendingTTL.String(),
 		"user":         user,

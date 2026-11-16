@@ -3,6 +3,7 @@ package web
 import (
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 )
@@ -88,6 +89,28 @@ func TestBasePath(t *testing.T) {
 		r.Header.Set("X-Forwarded-Prefix", c.prefix)
 		if got := s.basePath(r); got != c.want {
 			t.Errorf("%s %q: got %q, want %q", c.peer, c.prefix, got, c.want)
+		}
+	}
+}
+
+func TestCAOnlyForDirectVisitors(t *testing.T) {
+	ca := t.TempDir() + "/ca.crt"
+	if err := os.WriteFile(ca, []byte("PEM"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: Config{CAFile: ca, TrustProxy: true, Proxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.1/32")}}}
+	for peer, want := range map[string]int{"100.64.0.4:1": 200, "10.0.0.1:1": 404} {
+		r := httptest.NewRequest("GET", "/ca.crt", nil)
+		r.RemoteAddr = peer
+		w := httptest.NewRecorder()
+		s.handleCA(w, r)
+		if w.Code != want {
+			t.Errorf("%s: /ca.crt %d, want %d", peer, w.Code, want)
+		}
+		w = httptest.NewRecorder()
+		s.handleConfig(w, r)
+		if got := strings.Contains(w.Body.String(), `"ca":true`); got != (want == 200) {
+			t.Errorf("%s: config ca=%v", peer, got)
 		}
 	}
 }
