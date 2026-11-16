@@ -161,7 +161,7 @@ Notes:
 - **As built, 2026-11-16:** public at `https://ca.ffeineaddiction.com/wash/` through
   Caddy on `a-tinc` (tinc `10.0.0.1`) to `https://10.0.0.44:8443`. `.env` has the
   public origin in `WASH_ORIGIN` and `WASH_TRUST_PROXY=10.0.0.1`; Caddy trusts
-  `ca.crt` and sends `X-Forwarded-Prefix /wash`:
+  wash's CA (inline) and sends `X-Forwarded-Prefix /wash`:
 
   ```caddy
   redir /wash /wash/
@@ -170,7 +170,10 @@ Notes:
                   header_up X-Forwarded-Prefix /wash
                   transport http {
                           tls_server_name ca-data.tailnet.local
-                          tls_trust_pool file /etc/caddy/wash-ca.crt
+                          # wash's CA as base64 DER (Caddy runs in a container that only
+                          # mounts the Caddyfile, so no file path):
+                          #   upod wash exec wash-web /wash-web ca | openssl x509 -outform DER | base64 -w0
+                          tls_trust_pool inline <BASE64-DER>
                   }
           }
   }
