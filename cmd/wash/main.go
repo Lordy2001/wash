@@ -643,6 +643,7 @@ func keys(args []string) error {
 			return err
 		}
 		fmt.Println("passkey creation for you is closed")
+	case "revoke", "rm", "delete":
 		if len(args) != 1 {
 			return errors.New("usage: wash keys revoke ID")
 		}
