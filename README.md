@@ -274,8 +274,9 @@ purging pending keys after the TTL.
   has watched longest gets control. The controller sets the terminal size:
   watchers draw the controller's grid, with the font shrunk to fit their
   screen (never larger than their own font setting).
-* Phones get a smaller default font (A−/A+ still choose per device), and
-  the tabs get their own row that scrolls sideways.
+* Phones get a smaller default font, the tabs get their own row that
+  scrolls sideways, and text size and sign out move into a ☰ menu at the
+  top right. The font size is chosen per device.
   A session whose daemon predates this falls back to one peer: opening it
   elsewhere takes it over, and the devices trade it back and forth.
 * The wosh protocol types in `internal/wosh` mirror wosh's internal

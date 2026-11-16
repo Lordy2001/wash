@@ -152,7 +152,7 @@ async function startApp(ticket) {
   mgr.onAuthLost = (reason) => { teardown(); show('login'); setMsg($('#login-msg'), `Signed out: ${reason}`, 'err'); };
   await mgr.connect(ticket);
   app.mgr = mgr;
-  $('#who').textContent = `${mgr.hello.user}@${mgr.hello.host}`;
+  $('#who').textContent = $('#menu-who').textContent = `${mgr.hello.user}@${mgr.hello.host}`;
   show('main');
   const want = store.get('wash.active');
   const ids = app.sessions.map((s) => s.id);
@@ -498,10 +498,20 @@ function fontSize() {
   return w < 480 ? 10 : w < 800 ? 12 : 15;
 }
 
+function menu(open) {
+  const m = $('#menu');
+  if (m.hidden === !open) return;
+  m.hidden = !open;
+  $('#menu-btn').setAttribute('aria-expanded', String(open));
+  $('#m-size').textContent = `${fontSize()}px`;
+  if (!open && app.active && app.open.get(app.active)) top(app.open.get(app.active)).term.focus();
+}
+
 function zoom(d) {
   const cur = fontSize();
-  const n = Math.max(8, Math.min(32, cur + d));
+  const n = Math.max(6, Math.min(32, cur + d));
   store.set('wash.fontSize', String(n));
+  $('#m-size').textContent = `${n}px`;
   for (const o of app.open.values()) for (const l of o.layers) l.term.setOptions({ fontSize: n });
 }
 
@@ -518,7 +528,15 @@ async function boot() {
   $('#new-btn').onclick = () => newSession();
   $('#zoom-in').onclick = () => zoom(1);
   $('#zoom-out').onclick = () => zoom(-1);
-  $('#logout').onclick = async () => { teardown(); await api('api/logout', {}).catch(() => {}); show('login'); setMsg($('#login-msg'), 'Signed out.'); };
+  const signOut = async () => { menu(false); teardown(); await api('api/logout', {}).catch(() => {}); show('login'); setMsg($('#login-msg'), 'Signed out.'); };
+  $('#logout').onclick = signOut;
+  // phones: text size and sign out live in the ☰ menu
+  $('#menu-btn').onclick = (e) => { e.stopPropagation(); menu($('#menu').hidden); };
+  $('#m-zoom-in').onclick = () => zoom(1);
+  $('#m-zoom-out').onclick = () => zoom(-1);
+  $('#m-logout').onclick = signOut;
+  $('#menu').onclick = (e) => e.stopPropagation();
+  document.addEventListener('click', () => menu(false));
   document.addEventListener('keydown', (e) => {
     if (!e.ctrlKey || !e.shiftKey || !app.mgr) return;
     if (e.code === 'KeyT') { e.preventDefault(); newSession(); }

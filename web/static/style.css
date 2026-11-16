@@ -11,12 +11,25 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .card { max-width: 420px; margin: 12vh auto 0; padding: 28px 28px 20px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 10px; }
 @media (max-width: 480px) { .card { margin: 16px; } }
+header { position: relative; }
+#menu-btn { display: none; font-size: 18px; padding: 2px 10px; }
+#menu { position: absolute; top: 100%; right: 4px; z-index: 20; min-width: 220px; margin-top: 4px;
+  display: flex; flex-direction: column; gap: 6px; padding: 10px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+#menu[hidden] { display: none; }
+.menu-who { color: var(--dim); font-size: 12px; padding: 0 2px 4px; border-bottom: 1px solid var(--line); }
+.menu-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
+.menu-zoom { display: flex; align-items: center; gap: 6px; }
+.menu-zoom button { min-width: 44px; min-height: 36px; font-size: 15px; }
+#m-size { min-width: 3em; text-align: center; color: var(--dim); font-size: 13px; }
+.menu-item { width: 100%; min-height: 40px; font-size: 15px; text-align: left; }
 /* phones: the tabs get their own full-width row that scrolls sideways, and
    compact tabs with bigger touch targets */
 @media (max-width: 700px) {
   header { flex-wrap: wrap; row-gap: 4px; }
   #tabs { order: 2; flex: 1 0 100%; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
-  #who { display: none; }
+  #who, #zoom-in, #zoom-out, #logout { display: none; }
+  #menu-btn { display: inline-block; }
   .tab { padding: 2px 0 2px 8px; gap: 0; flex: none; }
   .tab .name { max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
   .tab .st { display: none; }

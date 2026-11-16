@@ -55,6 +55,15 @@
     <button id="zoom-in" title="larger font">A+</button>
     <span id="who"></span>
     <button id="logout" title="sign out">⏻</button>
+    <button id="menu-btn" title="menu" aria-haspopup="true" aria-expanded="false">☰</button>
+    <div id="menu" role="menu" hidden>
+      <div class="menu-who" id="menu-who"></div>
+      <div class="menu-row">Text size
+        <span class="menu-zoom"><button id="m-zoom-out" aria-label="smaller text">A−</button>
+        <span id="m-size"></span><button id="m-zoom-in" aria-label="larger text">A+</button></span>
+      </div>
+      <button id="m-logout" class="menu-item">Sign out</button>
+    </div>
   </header>
   <div id="terms"></div>
 </section>
