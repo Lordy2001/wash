@@ -261,7 +261,11 @@ purging pending keys after the TTL.
   protocol.
 * wosh's `src:` transfers, port forwards and agent forwarding are client
   features that the browser does not provide.
-* One peer per session (as in wosh): opening a session in a second browser
-  takes it over from the first.
+* One peer per session (as in wosh): opening a session on a second device
+  takes it over. The first device shows "opened on another device" with a
+  **Take it back** button and does not reconnect by itself. washd remembers
+  which page holds each session, so a device that slept through a takeover
+  does not grab the session back when it wakes. Opening the tab, reloading
+  or Take it back are deliberate and always win.
 * The wosh protocol types in `internal/wosh` mirror wosh's internal
   `wire` package (protocol v2). Keep them in sync.

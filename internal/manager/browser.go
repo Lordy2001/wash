@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -24,11 +25,17 @@ import (
 //	{"t":"sessions","sessions":[...]}                 pushed on every change
 //	{"t":"answer","rid","sdp"}  {"t":"created","rid","session"}  {"t":"ticket","rid","ticket"}
 //	{"t":"ok","rid"}  {"t":"err","rid","err"}  {"t":"bridged","rid"}
+//	{"t":"taken","id","cid","from"}   another browser (page cid, address from) now
+//	                                  holds session id: a wosh session has one peer,
+//	                                  so the others stop reconnecting to it
 //
 // browser -> washd:
 //
 //	{"t":"list"} {"t":"new","name","cols","rows"} {"t":"kill","id"} {"t":"rename","id","name"}
-//	{"t":"offer","id","sdp","cols","rows","rx_out"}   WebRTC straight to the wosh daemon
+//	{"t":"offer","id","sdp","cols","rows","rx_out","cid","take"}   WebRTC straight to the wosh daemon
+//	   take: the user opened the session (tab, reload, "take it back"). Without it
+//	   (an automatic reconnect) the offer is refused while another page holds the
+//	   session: "taken: ...".
 //	{"t":"ticket"}                                     ticket for another socket (bridge)
 //	{"t":"hop.add","id","hop":{id,parent,host,user,key}}  remember a chained hop
 //	{"t":"hop.del","id","name":HOPID}                 forget it (and hops below it)
@@ -36,7 +43,7 @@ import (
 //	                                                   make it a remote session, end PARENT
 //	{"t":"build","name":"linux-amd64"}                 wosh build for a hop's middle host:
 //	                                                   {"t":"chunk","data"}..., then {"t":"build","stamp","n"}
-//	{"t":"bridge","id","cols","rows","rx_out"}         this socket becomes the session:
+//	{"t":"bridge","id","cols","rows","rx_out","cid","take"}   this socket becomes the session:
 //	                                                   binary messages are wosh frames
 type bmsg struct {
 	T        string           `json:"t"`
@@ -64,6 +71,36 @@ type bmsg struct {
 	N        int              `json:"n,omitempty"`     // build: number of chunks sent
 	Sock     string           `json:"sock,omitempty"`  // adopt: hop daemon socket (from its hello)
 	Route    []string         `json:"route,omitempty"` // adopt: ssh args the parent used (hello.hop)
+	CID      string           `json:"cid,omitempty"`   // offer/bridge/taken: the page that connects
+	From     string           `json:"from,omitempty"`  // taken: that browser's address
+	Take     bool             `json:"take,omitempty"`  // offer/bridge: a deliberate takeover
+}
+
+// holder is the browser page that last connected to a session.
+type holder struct {
+	cid, from string
+	conn      *browserConn
+}
+
+// claim checks that page cid may connect to session sid: always when the user
+// asked (take), else only if no other page holds it. A device that slept
+// through a takeover therefore does not grab the session back on waking.
+func (m *Manager) claim(sid, cid string, take bool) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if h, ok := m.holders[sid]; ok && !take && cid != "" && h.cid != cid {
+		return fmt.Errorf("taken: this session is open on another device (%s)", h.from)
+	}
+	return nil
+}
+
+func (m *Manager) hold(b *browserConn, sid, cid string) {
+	if cid == "" {
+		return
+	}
+	m.mu.Lock()
+	m.holders[sid] = holder{cid: cid, from: b.remote, conn: b}
+	m.mu.Unlock()
 }
 
 type browserConn struct {
@@ -98,6 +135,24 @@ func (b *browserConn) sendBinary(p []byte) error {
 	ctx, cancel := context.WithTimeout(b.ctx, 30*time.Second)
 	defer cancel()
 	return b.c.Write(ctx, websocket.MessageBinary, p)
+}
+
+// taken tells every other browser page that the page cid (on connection by)
+// now holds session sid. The wosh daemon keeps one peer per session and drops
+// the previous one; without this, that page would reconnect and take the
+// session back, and two devices would trade it forever.
+func (m *Manager) taken(by *browserConn, sid, cid string) {
+	m.mu.Lock()
+	var cs []*browserConn
+	for c := range m.conns {
+		if !c.bridge && c != by {
+			cs = append(cs, c)
+		}
+	}
+	m.mu.Unlock()
+	for _, c := range cs {
+		go c.send(bmsg{T: "taken", ID: sid, CID: cid, From: by.remote})
+	}
 }
 
 // changed pushes the session list to every browser.
@@ -151,6 +206,11 @@ func (m *Manager) serveBrowser(sid, remote string, t *ticket) {
 		m.setAttached(b, "")
 		m.mu.Lock()
 		delete(m.conns, b)
+		for sid, h := range m.holders {
+			if h.conn == b { // that page went away: nobody holds the session
+				delete(m.holders, sid)
+			}
+		}
 		m.mu.Unlock()
 		bcancel()
 		_ = c.CloseNow()
@@ -257,6 +317,10 @@ func (m *Manager) handleBrowser(b *browserConn, req bmsg) {
 			fail(err)
 			return
 		}
+		if err := m.claim(s.ID, req.CID, req.Take); err != nil {
+			fail(err)
+			return
+		}
 		o := m.offerFor(s, req.Cols, req.Rows, req.RxOut, m.config())
 		o.SDP = req.SDP
 		ans, err := m.signal(s)(ctx, o)
@@ -268,6 +332,8 @@ func (m *Manager) handleBrowser(b *browserConn, req bmsg) {
 			return
 		}
 		m.setAttached(b, s.ID)
+		m.hold(b, s.ID, req.CID)
+		m.taken(b, s.ID, req.CID)
 		m.changed()
 		b.send(bmsg{T: "answer", RID: req.RID, SDP: ans.SDP})
 	default:
@@ -283,6 +349,9 @@ func (e errUnknown) Error() string { return "unknown request " + string(e) }
 // forwards frames between the data channel and the socket.
 func (m *Manager) bridge(b *browserConn, req bmsg) {
 	s, err := m.get(req.ID)
+	if err == nil {
+		err = m.claim(s.ID, req.CID, req.Take)
+	}
 	if err != nil {
 		b.send(bmsg{T: "err", RID: req.RID, Err: err.Error()})
 		return
@@ -319,6 +388,8 @@ func (m *Manager) bridge(b *browserConn, req bmsg) {
 	}
 	defer pc.Close()
 	m.setAttached(b, s.ID)
+	m.hold(b, s.ID, req.CID)
+	m.taken(b, s.ID, req.CID)
 	m.changed()
 	b.send(bmsg{T: "bridged", RID: req.RID})
 	close(ready)

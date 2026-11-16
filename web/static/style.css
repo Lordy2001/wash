@@ -48,3 +48,7 @@ header button { padding: 3px 9px; font-size: 13px; }
 #terms { flex: 1; position: relative; min-height: 0; background: #101317; }
 .view-box { position: absolute; inset: 0; }
 .term { position: absolute; inset: 4px 2px 2px 6px; }
+.taken { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 12px; padding: 16px; text-align: center; color: #d8dee9;
+  background: rgba(16, 19, 23, 0.82); }
+.taken p { margin: 0; }

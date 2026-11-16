@@ -460,7 +460,21 @@ func TestEndToEnd(t *testing.T) {
 	sub = request(ctl, map[string]any{"t": "ticket"})["ticket"].(string)
 	br2, _ := dialWS(sub)
 	defer br2.CloseNow()
-	request(br2, map[string]any{"t": "bridge", "id": sid, "cols": 100, "rows": 30, "rx_out": rx})
+	request(br2, map[string]any{"t": "bridge", "id": sid, "cols": 100, "rows": 30, "rx_out": rx, "cid": "pageB"})
+	// other pages hear that page "pageB" now holds the session (so they stop reconnecting)
+	for {
+		typ, b, err := ctl.Read(ctx)
+		if err != nil {
+			t.Fatalf("waiting for taken: %v", err)
+		}
+		var m map[string]any
+		if typ == websocket.MessageText && json.Unmarshal(b, &m) == nil && m["t"] == "taken" && m["cid"] == "pageB" {
+			if m["id"] != sid || m["from"] == "" {
+				t.Fatalf("taken: %v", m)
+			}
+			break
+		}
+	}
 	in2 := []byte("echo again-$((7*6))\r")
 	_ = br2.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, uint64(len(in)), in2))
 	outBuf.Reset()
@@ -478,6 +492,33 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if strings.Contains(outBuf.String(), "wash-42") {
 		t.Fatal("old output replayed")
+	}
+
+	// pageB holds the session: pageA's automatic reconnect is refused, a deliberate take works
+	bridgeAs := func(cid string, take bool) map[string]any {
+		tk := request(ctl, map[string]any{"t": "ticket"})["ticket"].(string)
+		c, _ := dialWS(tk)
+		defer c.CloseNow()
+		b, _ := json.Marshal(map[string]any{"t": "bridge", "rid": 1, "id": sid, "cols": 100, "rows": 30, "cid": cid, "take": take})
+		if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+			t.Fatal(err)
+		}
+		for {
+			typ, b, err := c.Read(ctx)
+			if err != nil {
+				t.Fatalf("bridge as %s: %v", cid, err)
+			}
+			var m map[string]any
+			if typ == websocket.MessageText && json.Unmarshal(b, &m) == nil && m["rid"] == float64(1) {
+				return m
+			}
+		}
+	}
+	if m := bridgeAs("pageA", false); m["t"] != "err" || !strings.HasPrefix(fmt.Sprint(m["err"]), "taken") {
+		t.Fatalf("reconnect while another page holds the session: %v", m)
+	}
+	if m := bridgeAs("pageA", true); m["t"] != "bridged" {
+		t.Fatalf("deliberate take: %v", m)
 	}
 
 	// --- kill from the CLI side -----------------------------------------------------------

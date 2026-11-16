@@ -146,6 +146,8 @@ export class ManagerConn {
   constructor() {
     this.ws = null; this.hello = null; this.rid = 0; this.pending = new Map();
     this.onSessions = () => {}; this.onState = () => {}; this.onAuthLost = () => {};
+    this.onTaken = () => {};
+    this.cid = randomHex(8); // this page: tells our own takeovers from other devices
     this.closed = false; this.resume = null;
   }
 
@@ -162,6 +164,7 @@ export class ManagerConn {
       if (typeof ev.data !== 'string') return;
       const m = JSON.parse(ev.data);
       if (m.t === 'sessions' && !m.rid) { this.onSessions(m.sessions || []); return; }
+      if (m.t === 'taken') { if (m.cid !== this.cid) this.onTaken(m); return; }
       if (m.t === 'chunk' && this.pending.has(m.rid)) { (this.pending.get(m.rid).chunks ||= []).push(m.data); return; }
       if (m.rid && this.pending.has(m.rid)) {
         const { resolve, reject, chunks } = this.pending.get(m.rid);
@@ -330,7 +333,7 @@ async function webrtcTransport(mgr, signal, onFrame, onDown) {
   };
 }
 
-async function bridgeTransport(mgr, id, size, rxOut, onFrame, onDown) {
+async function bridgeTransport(mgr, id, size, rxOut, take, onFrame, onDown) {
   const { ticket } = await mgr.request({ t: 'ticket' });
   const { ws } = await openSocket(ticket);
   let down = false;
@@ -342,7 +345,7 @@ async function bridgeTransport(mgr, id, size, rxOut, onFrame, onDown) {
       else if (m.t === 'err') reject(new Error(m.err));
     };
     ws.onclose = (ev) => reject(new Error(ev.reason || 'bridge closed'));
-    ws.send(JSON.stringify({ t: 'bridge', rid: 1, id, cols: size.cols, rows: size.rows, rx_out: rxOut }));
+    ws.send(JSON.stringify({ t: 'bridge', rid: 1, id, cols: size.cols, rows: size.rows, rx_out: rxOut, cid: mgr.cid, take }));
   });
   ws.onmessage = (ev) => { if (typeof ev.data !== 'string') onFrame(new Uint8Array(ev.data)); };
   ws.onclose = () => { if (!down) { down = true; onDown(); } };
@@ -375,6 +378,8 @@ export class WoshSession {
     this.inBase = 0;             // input acknowledged up to
     this.inBuf = new Uint8Array(0); // unacknowledged input, starting at inBase
     this.tr = null; this.closed = false; this.exited = false;
+    this.detached = false;      // another device took the session: do not reconnect
+    this.take = true;           // next connect is deliberate (open, take back), not a reconnect
     this.rtt = null; this.lastPong = 0; this.pingN = 0; this.pingSent = new Map();
     this.preferBridge = transport === 'bridge';
     term.onData = (d) => this.input(typeof d === 'string' ? enc.encode(d) : d);
@@ -385,11 +390,13 @@ export class WoshSession {
 
   async connect() {
     let delay = 300;
-    while (!this.closed && !this.exited) {
+    while (!this.closed && !this.exited && !this.detached) {
       this.onState({ state: 'connecting' });
       try {
         this.synced = false; this.flushPending = true;
         this.tr = await this.open();
+        if (this.detached) { const tr = this.tr; this.tr = null; tr.close(); return; }
+        this.take = false; // from now on we only reconnect, never grab it back
         // the first ack may have arrived while open() was finishing
         if (this.synced && this.flushPending) { this.flushPending = false; this.flushInput(); }
         this.sigTimeouts = 0;
@@ -401,6 +408,12 @@ export class WoshSession {
         this.startPing();
         return;
       } catch (e) {
+        if (/^taken/.test(e.message)) { // another device holds it; we slept through the takeover
+          this.detached = true;
+          const m = /\(([^)]*)\)/.exec(e.message);
+          this.onState({ state: 'detached', from: m ? m[1] : '' });
+          return;
+        }
         this.onState({ state: 'down', error: e.message });
         if (/no session|session not found|gone/.test(e.message)) { this.exited = true; this.onExit(null, e.message); return; }
         if (this.parent && /signal timeout/.test(e.message) && ++this.sigTimeouts >= 2) {
@@ -418,7 +431,7 @@ export class WoshSession {
   signal(sdp) {
     const { cols, rows } = this.size();
     if (!this.parent) {
-      return this.mgr.request({ t: 'offer', id: this.id, sdp, cols, rows, rx_out: this.rxOut }).then((a) => a.sdp);
+      return this.mgr.request({ t: 'offer', id: this.id, sdp, cols, rows, rx_out: this.rxOut, cid: this.mgr.cid, take: this.take }).then((a) => a.sdp);
     }
     const h = this.mgr.hello;
     return this.parent.relay({
@@ -452,16 +465,35 @@ export class WoshSession {
       try {
         return await webrtcTransport(this.mgr, (sdp) => this.signal(sdp), onFrame, down);
       } catch (e) {
-        if (this.mode === 'webrtc') throw e;
+        if (this.mode === 'webrtc' || /^taken/.test(e.message)) throw e;
         console.warn('wash: WebRTC failed, using the WebSocket bridge:', e.message);
         this.preferBridge = true; // until a reload; roaming back is cheap to retry later
       }
     }
-    return bridgeTransport(this.mgr, this.id, this.size(), this.rxOut, onFrame, down);
+    return bridgeTransport(this.mgr, this.id, this.size(), this.rxOut, this.take, onFrame, down);
+  }
+
+  // detach lets go of the session because another device took it; attach
+  // takes it back (which detaches that device in turn).
+  detach(from = '') {
+    if (this.closed || this.exited || this.detached) return;
+    this.detached = true;
+    this.stopPing();
+    const tr = this.tr;
+    this.tr = null;
+    if (tr) tr.close();
+    this.onState({ state: 'detached', from });
+  }
+
+  attach() {
+    if (!this.detached) return;
+    this.detached = false;
+    this.take = true;
+    this.connect();
   }
 
   linkDown() {
-    if (this.closed || this.exited) return;
+    if (this.closed || this.exited || this.detached) return;
     this.stopPing();
     this.tr = null;
     this.connect();
@@ -470,7 +502,7 @@ export class WoshSession {
   send(b) { if (this.tr) this.tr.send(b); }
 
   input(bytes) {
-    if (this.exited) return;
+    if (this.exited || this.detached) return;
     const prevEnd = this.inBase + this.inBuf.length;
     const nb = new Uint8Array(this.inBuf.length + bytes.length);
     nb.set(this.inBuf); nb.set(bytes, this.inBuf.length);

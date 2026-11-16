@@ -150,6 +150,8 @@ async function startApp(ticket) {
   mgr.onSessions = (list) => { app.sessions = list; renderTabs(); };
   mgr.onState = (s) => { $('#mgr-state').textContent = s === 'connected' ? '' : s; };
   mgr.onAuthLost = (reason) => { teardown(); show('login'); setMsg($('#login-msg'), `Signed out: ${reason}`, 'err'); };
+  mgr.onTaken = (m) => { const o = app.open.get(m.id); if (o) detachView(o, m.from); };
+  // (a refused reconnect detaches the root layer itself: see onState in openView)
   await mgr.connect(ticket);
   app.mgr = mgr;
   $('#who').textContent = `${mgr.hello.user}@${mgr.hello.host}`;
@@ -243,7 +245,7 @@ function newLayer(o, label) {
   return { el, term, status: '…' };
 }
 
-const statusText = (s) => s.state === 'up' ? (s.transport === 'webrtc' ? 'p2p' : 'ws') + (s.rtt != null ? ` ${Math.round(s.rtt)}ms` : '')
+const statusText = (s) => s.state === 'detached' ? 'elsewhere' : s.state === 'up' ? (s.transport === 'webrtc' ? 'p2p' : 'ws') + (s.rtt != null ? ` ${Math.round(s.rtt)}ms` : '')
   : s.state === 'connecting' ? '…' : '⚠';
 
 function openView(id) {
@@ -259,6 +261,7 @@ function openView(id) {
       root.status = statusText(s);
       if (s.error) console.warn('wash session', id, s.error);
       setStatus(o, root);
+      if (s.state === 'detached') detachView(o, s.from);
       if (s.state === 'up' && !root.restored) { root.restored = true; restoreHops(o); }
     },
     onExit: (code, why) => {
@@ -275,6 +278,32 @@ function openView(id) {
   root.term.fit();
   root.ws.connect();
   return o;
+}
+
+// A wosh session has one peer. When another device opens this session it
+// takes it over; this page lets go (no reconnecting) until asked to take it back.
+function detachView(o, from) {
+  if (o.detached) return;
+  o.detached = true;
+  for (const l of o.layers) l.ws.detach(from);
+  const d = document.createElement('div');
+  d.className = 'taken';
+  const p = document.createElement('p');
+  p.textContent = `This session was opened on another device${from ? ` (${from})` : ''}.`;
+  const b = document.createElement('button');
+  b.textContent = 'Take it back';
+  b.onclick = () => attachView(o);
+  d.append(p, b);
+  o.box.append(d);
+  o.takenEl = d;
+}
+
+function attachView(o) {
+  if (!o.detached) return;
+  o.detached = false;
+  if (o.takenEl) { o.takenEl.remove(); o.takenEl = null; }
+  for (const l of o.layers) l.ws.attach(); // the root first: hops signal through it
+  showTop(o);
 }
 
 // --- chained hops ------------------------------------------------------------
