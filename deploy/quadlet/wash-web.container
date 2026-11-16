@@ -1,0 +1,45 @@
+[Unit]
+Description=wash-web (passkey login + hand-off to per-user washd)
+# MANDATORY: sqlite + TLS key on NVMe, dumps on the pool.
+RequiresMountsFor=/data-active/wash /data/backups/wash
+
+[Container]
+# Built locally from %h/wash-web (see wash-web.build); no registry, so no AutoUpdate.
+Image=wash-web.build
+ContainerName=wash-web
+
+# 0.0.0.0: reachable over LAN, tailnet and tinc. Access control is the Tailscale ACL
+# and the host firewall. washd on this host also dials this port (cross-user = host port).
+PublishPort=8443:8443
+
+# State: wash.db (sqlite, WAL) and tls/ (self-signed key the washd's pin).
+Volume=/data-active/wash:/var/lib/wash:rw
+# Target of `wash-web backup` (run by wash-web-backup.timer).
+Volume=/data/backups/wash:/backup:rw
+
+# Image runs as 65532:65532 (scratch, USER line); map it back to the wash user.
+UserNS=keep-id:uid=65532,gid=65532
+
+Environment=TZ=America/Chicago
+Environment=WASH_DATA=/var/lib/wash
+EnvironmentFile=%h/wash-web/.env
+
+# Hardening: static binary, nothing else in the image.
+NoNewPrivileges=true
+DropCapability=ALL
+ReadOnly=true
+
+# exec form: a plain string becomes CMD-SHELL, and the scratch image has no /bin/sh
+HealthCmd=["/wash-web","health"]
+HealthStartPeriod=10s
+HealthInterval=30s
+HealthRetries=3
+Notify=healthy
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=wash-web database backup
+RequiresMountsFor=/data/backups/wash /data-active/wash
+After=wash-web.service
+Requires=wash-web.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/bin/wash-web-backup.sh

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wash terminal demo</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #101317; color: #d8dee9; font: 13px system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { padding: 6px 12px; display: flex; gap: 12px; align-items: center; border-bottom: 1px solid #222831; }
+  header button { background: #1d2026; color: inherit; border: 1px solid #333a45; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
+  #term { flex: 1; min-height: 0; margin: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <strong>wash terminal demo</strong>
+  <span>keys typed are echoed as hex</span>
+  <button id="again">replay demo</button>
+  <button id="bigger">A+</button>
+  <button id="smaller">A-</button>
+  <span id="size"></span>
+</header>
+<div id="term"></div>
+<script type="module" src="termdemo.js"></script>
+</body>
+</html>

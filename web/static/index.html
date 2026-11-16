@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wash</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23101317'/%3E%3Cpath d='M3 5l3 3-3 3M8 11h5' stroke='%23f0c674' stroke-width='1.6' fill='none'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<section class="view card" id="login" hidden>
+  <h1>wash</h1>
+  <p class="sub">shell over wosh</p>
+  <form id="login-form">
+    <label>User <input id="login-user" autocomplete="username webauthn" autocapitalize="off" spellcheck="false" required></label>
+    <button id="login-btn" type="submit">Sign in with passkey</button>
+  </form>
+  <p class="msg" id="login-msg"></p>
+  <p class="alt"><a href="#" id="to-reg">Create a passkey</a></p>
+  <p class="hint" id="ca-hint" hidden>Certificate warning? Browsers block passkeys on untrusted
+    sites. Download <a href="/ca.crt">wash-ca.crt</a> and add it to this device's trusted
+    certificate authorities (it is limited to this server's names), then reload.</p>
+</section>
+
+<section class="view card" id="register" hidden>
+  <h1>New passkey</h1>
+  <form id="reg-form">
+    <label>Unix user on the host <input id="reg-user" autocapitalize="off" spellcheck="false" required></label>
+    <label>Name for this passkey <input id="reg-name" maxlength="64"></label>
+    <button id="reg-btn" type="submit">Create passkey</button>
+  </form>
+  <p class="msg" id="reg-msg"></p>
+  <p class="hint">New passkeys stay pending until you approve them from a shell on the host. Pending passkeys are deleted after one hour.</p>
+  <p class="alt"><a href="#" class="to-login">Back to sign in</a></p>
+</section>
+
+<section class="view card" id="pending" hidden>
+  <h1>Passkey created</h1>
+  <p>Passkey <code id="pending-id"></code> for <b id="pending-user"></b> is waiting for approval.
+     Approve it within <span id="pending-ttl"></span> by running this as that user on the host:</p>
+  <pre id="pending-cmd"></pre>
+  <p class="hint">Then sign in. The website and your shell manager both check the passkey.</p>
+  <p class="alt"><a href="#" class="to-login">Sign in</a></p>
+</section>
+
+<section class="view" id="main" hidden>
+  <header>
+    <div id="tabs"></div>
+    <button id="new-btn" title="new session (Ctrl+Shift+T)">+</button>
+    <span class="spacer"></span>
+    <span id="mgr-state"></span>
+    <button id="zoom-out" title="smaller font">A−</button>
+    <button id="zoom-in" title="larger font">A+</button>
+    <span id="who"></span>
+    <button id="logout" title="sign out">⏻</button>
+  </header>
+  <div id="terms"></div>
+</section>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

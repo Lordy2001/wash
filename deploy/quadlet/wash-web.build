@@ -1,0 +1,6 @@
+# wash-web image, built from the repo checkout in the service user's home.
+# Rebuild after `git pull`: uctl wash start wash-web-build.service (or podman build).
+[Build]
+ImageTag=localhost/wash-web:latest
+File=%h/wash-web/Containerfile.build
+SetWorkingDirectory=%h/wash-web
