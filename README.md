@@ -86,12 +86,17 @@ only inside a `wash keys open` window).
 
 ### Public deployment behind a reverse proxy
 
-* Give wash its own host name (e.g. `wash.example.com`). It needs to be at `/`
-  of its origin: the page uses absolute paths, and passkeys and cookies are
-  bound to the whole origin, so sharing it with other apps would let their bugs
-  reach wash.
-* `WASH_TLS=off`, `WASH_ORIGIN=https://wash.example.com`, and
-  `WASH_TRUST_PROXY` set to the proxy's address (IPs or CIDRs, comma separated).
+* Its own host name (`wash.example.com`) is safest. A path on a shared host
+  name (`example.com/wash/`) works too: the page only uses relative URLs, and the
+  proxy sends `X-Forwarded-Prefix` so the session cookie is scoped to that
+  path. The cookie path does not isolate wash from other apps on the same host
+  name, though: they share the origin, so script running in any of them can
+  call wash's API with the browser's cookie. Only share a host name with apps
+  you trust as much as wash.
+* `WASH_ORIGIN` gets the public origin (`https://example.com`, no path) next
+  to the internal ones, and `WASH_TRUST_PROXY` the proxy's address (IPs or
+  CIDRs, comma separated). The proxy can talk to wash-web's own TLS
+  (`WASH_TLS=auto`, trusting its CA) or plain HTTP (`WASH_TLS=off`).
   wash-web then believes `X-Forwarded-For`/`-Proto` only from those peers, and
   takes the right-most `X-Forwarded-For` entry that is not a proxy, so a client
   cannot pick its own address for the rate limit. `WASH_TRUST_PROXY=1` trusts any

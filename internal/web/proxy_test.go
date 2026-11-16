@@ -70,3 +70,24 @@ func TestConfigHidesOriginsAndVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestBasePath(t *testing.T) {
+	s := &Server{cfg: Config{TrustProxy: true, Proxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.1/32")}}}
+	for _, c := range []struct{ peer, prefix, want string }{
+		{"10.0.0.1:1", "/wash", "/wash"},
+		{"10.0.0.1:1", "/wash/", "/wash"},
+		{"10.0.0.1:1", "/a/b", "/a/b"},
+		{"10.0.0.1:1", "", ""},
+		{"10.0.0.1:1", "/../x", ""},
+		{"10.0.0.1:1", "/wash;x", ""},
+		{"10.0.0.1:1", "wash", ""},
+		{"203.0.113.9:1", "/wash", ""}, // not from the proxy
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.peer
+		r.Header.Set("X-Forwarded-Prefix", c.prefix)
+		if got := s.basePath(r); got != c.want {
+			t.Errorf("%s %q: got %q, want %q", c.peer, c.prefix, got, c.want)
+		}
+	}
+}

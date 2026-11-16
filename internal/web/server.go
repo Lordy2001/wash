@@ -224,6 +224,23 @@ func peerIP(r *http.Request) string {
 	return h
 }
 
+var prefixRE = regexp.MustCompile(`^(/[A-Za-z0-9._~-]+)+$`)
+
+// basePath is the path prefix the site is served under: X-Forwarded-Prefix
+// from a trusted proxy (e.g. "/wash" behind Caddy's handle_path), else "".
+// The page itself only uses relative URLs; this scopes the session cookie,
+// so other apps on the same host name never receive it.
+func (s *Server) basePath(r *http.Request) string {
+	if !s.viaProxy(r) {
+		return ""
+	}
+	p := strings.TrimRight(r.Header.Get("X-Forwarded-Prefix"), "/")
+	if !prefixRE.MatchString(p) || strings.Contains(p, "/.") {
+		return ""
+	}
+	return p
+}
+
 // trustedProxy reports whether ip is one of the configured proxies.
 func (s *Server) trustedProxy(ip string) bool {
 	a, err := netip.ParseAddr(ip)
@@ -749,7 +766,7 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.sessions[tok] = &webSession{user: c.user, expires: time.Now().Add(sessionTTL)}
 	s.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true,
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: s.basePath(r) + "/", HttpOnly: true,
 		Secure: strings.HasPrefix(origin, "https:"), SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds())})
 	log.Printf("login %s from %s with passkey %s", c.user, s.clientIP(r), passkey.ShortID(cred.ID))
 	writeJSON(w, 200, map[string]any{"user": c.user, "ticket": t.Ticket})
@@ -761,7 +778,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		delete(s.sessions, c.Value)
 		s.mu.Unlock()
 	}
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: s.basePath(r) + "/", MaxAge: -1})
 	writeJSON(w, 200, map[string]any{})
 }
 

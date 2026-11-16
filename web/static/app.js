@@ -83,10 +83,10 @@ async function signIn(ev) {
   setMsg(msg, 'Waiting for your passkey…');
   $('#login-btn').disabled = true;
   try {
-    const begin = await api('/api/login/begin', { user });
+    const begin = await api('api/login/begin', { user });
     const cred = await navigator.credentials.get({ publicKey: requestOptions(begin.options) });
     setMsg(msg, 'Verifying with the website and your shell manager…');
-    const fin = await api(`/api/login/finish?id=${begin.id}`, credentialJSON(cred));
+    const fin = await api(`api/login/finish?id=${begin.id}`, credentialJSON(cred));
     setMsg(msg, 'Connecting…');
     await startApp(fin.ticket);
   } catch (e) {
@@ -107,9 +107,9 @@ async function createPasskey(ev) {
   $('#reg-btn').disabled = true;
   setMsg(msg, 'Follow your browser’s prompt to create the passkey…');
   try {
-    const begin = await api('/api/register/begin', { user, name });
+    const begin = await api('api/register/begin', { user, name });
     const cred = await navigator.credentials.create({ publicKey: creationOptions(begin.options) });
-    const fin = await api(`/api/register/finish?id=${begin.id}`, credentialJSON(cred));
+    const fin = await api(`api/register/finish?id=${begin.id}`, credentialJSON(cred));
     $('#pending-id').textContent = fin.id;
     $('#pending-cmd').textContent = `wash keys approve ${fin.id}`;
     $('#pending-user').textContent = fin.user;
@@ -451,7 +451,7 @@ async function boot() {
   $('#new-btn').onclick = () => newSession();
   $('#zoom-in').onclick = () => zoom(1);
   $('#zoom-out').onclick = () => zoom(-1);
-  $('#logout').onclick = async () => { teardown(); await api('/api/logout', {}).catch(() => {}); show('login'); setMsg($('#login-msg'), 'Signed out.'); };
+  $('#logout').onclick = async () => { teardown(); await api('api/logout', {}).catch(() => {}); show('login'); setMsg($('#login-msg'), 'Signed out.'); };
   document.addEventListener('keydown', (e) => {
     if (!e.ctrlKey || !e.shiftKey || !app.mgr) return;
     if (e.code === 'KeyT') { e.preventDefault(); newSession(); }
@@ -463,7 +463,7 @@ async function boot() {
     }
   }, true);
 
-  try { config = await (await fetch('/api/config')).json(); } catch {}
+  try { config = await (await fetch('api/config')).json(); } catch {}
   // passkeys are bound to a host name: an IP address can never work
   const isIP = /^[\d.]+$/.test(location.hostname) || location.hostname.startsWith('[');
   if (isIP) {

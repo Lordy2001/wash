@@ -158,6 +158,23 @@ Notes:
 - `HealthCmd` uses the exec form. The `scratch` image has no shell, so the string form
   (`CMD-SHELL`) would never report healthy, and `Notify=healthy` would time out the
   unit (see `gotchas.md`).
+- **As built, 2026-11-16:** public at `https://ca.ffeineaddiction.com/wash/` through
+  Caddy on `a-tinc` (tinc `10.0.0.1`) to `https://10.0.0.44:8443`. `.env` has the
+  public origin in `WASH_ORIGIN` and `WASH_TRUST_PROXY=10.0.0.1`; Caddy trusts
+  `ca.crt` and sends `X-Forwarded-Prefix /wash`:
+
+  ```caddy
+  redir /wash /wash/
+  handle_path /wash/* {
+          reverse_proxy https://10.0.0.44:8443 {
+                  header_up X-Forwarded-Prefix /wash
+                  transport http {
+                          tls_server_name ca-data.tailnet.local
+                          tls_trust_pool file /etc/caddy/wash-ca.crt
+                  }
+          }
+  }
+  ```
 - Behind Caddy on the `ca` box, set `WASH_TLS=off`, `WASH_TRUST_PROXY=<Caddy's IP as
   wash-web sees it>` and `WASH_ORIGIN=https://<public name>` (its own host name, not a
   subpath; see the main README). `WASH_TRUST_PROXY=1` (any peer) is safe only with

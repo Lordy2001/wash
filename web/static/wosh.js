@@ -33,9 +33,11 @@ function resizeFrame(cols, rows) {
   return b;
 }
 
+// Relative to the page, so the site works under a path prefix (e.g. /wash/).
 function wsURL(ticket) {
-  const p = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${p}//${location.host}/api/ws?ticket=${encodeURIComponent(ticket)}`;
+  const u = new URL(`api/ws?ticket=${encodeURIComponent(ticket)}`, location.href);
+  u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return u.href;
 }
 
 export class AuthError extends Error {}
