@@ -56,13 +56,15 @@ Stop the dev instance before you publish. Both instances bind 8443.
 
 ## 2. Publish to the `wash` service user
 
-These are the template's §9 checklist steps, filled in. The ids below were the next
-free ones in `storage-layout.md` on 2026-11-16. **Re-read that table before you
-allocate, and record what you actually got.**
+These are the template's §9 checklist steps, filled in. **As built on 2026-11-16:**
+uid 5012, gid **969** (`useradd --system` picks the gid from the system range),
+subuid/subgid `1051968-1117503`, recorded in `storage-layout.md`. First start, including
+the image build, takes about 30 s. When deploying elsewhere, re-read that table
+before allocating.
 
 ```bash
 SVC=wash
-# 1-4: account, subuid range, linger, quadlet dir
+# 1-4: account, subuid range, linger, quadlet dir (prints a harmless SYS_UID_MAX warning)
 sudo useradd --system --uid 5012 --create-home --home-dir /home/$SVC --shell /usr/sbin/nologin $SVC
 sudo usermod --add-subuids 1051968-1117503 --add-subgids 1051968-1117503 $SVC
 sudo loginctl enable-linger $SVC
@@ -76,10 +78,14 @@ sudo find /home/$SVC/.config /home/$SVC/bin -type d -exec chmod 2770 {} +
 # state: private to wash (sqlite + TLS key), no `share` group needed
 sudo install -d -o $SVC -g $SVC -m 2770 /data-active/$SVC
 sudo install -d -o $SVC -g $SVC -m 2770 /data/backups/$SVC
+# moving from the dev instance? stop it first (sqlite WAL), then keep its state so
+# enrolled washd pins, devices that trust the CA and approved passkeys carry over:
+#   systemctl --user stop wash-web-dev
+#   sudo cp -a ~/.local/share/wash-dev/data/. /data-active/$SVC/
+#   sudo chown -R $SVC:$SVC /data-active/$SVC && sudo chmod 2770 /data-active/$SVC   # cp -a copies the 0700 mode
 
 # source checkout = the .build context (in version control, per template §3)
-sudo -u $SVC git clone <this repo> /home/$SVC/wash-web
-#   or: sudo -u $SVC cp -a ~/_ai/wosh/repos/wash /home/$SVC/wash-web
+sudo git clone ~/_ai/wosh/repos/wash /home/$SVC/wash-web && sudo chown -R $SVC:$SVC /home/$SVC/wash-web
 
 # units, script, env
 sudo cp deploy/quadlet/wash-web.{container,build} /home/$SVC/.config/containers/systemd/
@@ -88,7 +94,10 @@ sudo cp deploy/bin/wash-web-backup.sh /home/$SVC/bin/
 sudo cp deploy/env.example /home/$SVC/wash-web/.env      # then edit WASH_ORIGIN / WASH_TLS_HOSTS
 sudo chown $SVC:$SVC /home/$SVC/wash-web/.env && sudo chmod 0600 /home/$SVC/wash-web/.env
 sudo chown $SVC:svcadm /home/$SVC/bin/wash-web-backup.sh && sudo chmod 0770 /home/$SVC/bin/wash-web-backup.sh
-sudo find /home/$SVC/.config -type f -exec chgrp svcadm {} + -exec chmod 0660 {} +
+# files copied by root must be OWNED by wash (svcadm group only grants admins access);
+# root:svcadm 0660 makes the quadlet generator fail with "permission denied"
+sudo chown -R $SVC:svcadm /home/$SVC/.config /home/$SVC/bin
+sudo find /home/$SVC/.config -type f -exec chmod 0660 {} +
 
 # generator check, start, backup timer
 sudo -u $SVC /usr/libexec/podman/quadlet -dryrun -user | grep -A3 -- '---wash-web'
@@ -139,7 +148,7 @@ wash status                                   # as a user with washd: "website .
 | enroll a user | `wash enroll` as that user (sudo via upod), or `wash web enroll USER` + `wash enroll URL CODE` |
 | list passkeys / managers | `wash web keys` / `wash web managers` |
 | cert fingerprint | `wash web fingerprint` |
-| update | `sudo -u wash git -C /home/wash/wash-web pull && upod wash build -t localhost/wash-web:latest -f /home/wash/wash-web/Containerfile.build /home/wash/wash-web && uctl wash restart wash-web` |
+| update | `sudo git -C /home/wash/wash-web pull && sudo chown -R wash:wash /home/wash/wash-web && upod wash build -t localhost/wash-web:latest -f /home/wash/wash-web/Containerfile.build /home/wash/wash-web && uctl wash restart wash-web` |
 | restore | stop wash-web; `cp /data/backups/wash/wash-STAMP.db /data-active/wash/wash.db`; delete `wash.db-wal` and `wash.db-shm`; unpack `wash-tls-STAMP.tar.gz` into `/data-active/wash`; start |
 
 Notes:
