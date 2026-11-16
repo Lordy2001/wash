@@ -57,7 +57,6 @@ type Manager struct {
 	cfg       Config
 	sessions  map[string]*Session
 	attached  map[string]int
-	holders   map[string]holder    // session id -> the browser page that holds it
 	nonces    map[string]time.Time // hex nonce -> expiry
 	tickets   map[string]*ticket   // sha256 hex -> ticket
 	conns     map[*browserConn]bool
@@ -81,7 +80,7 @@ func New() (*Manager, error) {
 	}
 	m := &Manager{
 		user: creds.User, creds: creds, cfg: LoadConfig(),
-		sessions: map[string]*Session{}, attached: map[string]int{}, holders: map[string]holder{},
+		sessions: map[string]*Session{}, attached: map[string]int{},
 		nonces: map[string]time.Time{}, tickets: map[string]*ticket{},
 		conns: map[*browserConn]bool{}, started: time.Now(), quit: make(chan struct{}),
 	}

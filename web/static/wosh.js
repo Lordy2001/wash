@@ -26,6 +26,13 @@ function offsetFrame(t, off, data) {
   return b;
 }
 
+function controlFrame(obj) {
+  const j = enc.encode(JSON.stringify(obj));
+  const b = new Uint8Array(1 + j.length);
+  b[0] = F.CONTROL; b.set(j, 1);
+  return b;
+}
+
 function resizeFrame(cols, rows) {
   const b = new Uint8Array(5);
   const v = new DataView(b.buffer);
@@ -142,12 +149,21 @@ function openSocket(ticket) {
   });
 }
 
+// tabID identifies this browser tab to session daemons (shared sessions). It
+// survives a reload, so a reloaded tab is the same client and keeps control.
+function tabID() {
+  try {
+    let id = sessionStorage.getItem('wash.cid');
+    if (!id) { id = randomHex(8); sessionStorage.setItem('wash.cid', id); }
+    return id;
+  } catch { return randomHex(8); }
+}
+
 export class ManagerConn {
   constructor() {
     this.ws = null; this.hello = null; this.rid = 0; this.pending = new Map();
     this.onSessions = () => {}; this.onState = () => {}; this.onAuthLost = () => {};
-    this.onTaken = () => {};
-    this.cid = randomHex(8); // this page: tells our own takeovers from other devices
+    this.cid = tabID(); // this browser tab, across reloads: the daemon knows it as one client
     this.closed = false; this.resume = null;
   }
 
@@ -164,7 +180,6 @@ export class ManagerConn {
       if (typeof ev.data !== 'string') return;
       const m = JSON.parse(ev.data);
       if (m.t === 'sessions' && !m.rid) { this.onSessions(m.sessions || []); return; }
-      if (m.t === 'taken') { if (m.cid !== this.cid) this.onTaken(m); return; }
       if (m.t === 'chunk' && this.pending.has(m.rid)) { (this.pending.get(m.rid).chunks ||= []).push(m.data); return; }
       if (m.rid && this.pending.has(m.rid)) {
         const { resolve, reject, chunks } = this.pending.get(m.rid);
@@ -378,42 +393,38 @@ export class WoshSession {
     this.inBase = 0;             // input acknowledged up to
     this.inBuf = new Uint8Array(0); // unacknowledged input, starting at inBase
     this.tr = null; this.closed = false; this.exited = false;
-    this.detached = false;      // another device took the session: do not reconnect
-    this.take = true;           // next connect is deliberate (open, take back), not a reconnect
+    // Shared sessions: several tabs (devices) can watch a session; one has
+    // control. role is 'control' or 'view' (from the daemon; an old daemon
+    // never says, and then we always have control).
+    this.role = 'control';
+    this.take = false;          // next connect asks for control (else: control only if free)
     this.rtt = null; this.lastPong = 0; this.pingN = 0; this.pingSent = new Map();
     this.preferBridge = transport === 'bridge';
     term.onData = (d) => this.input(typeof d === 'string' ? enc.encode(d) : d);
-    term.onResize = (c, r) => this.send(resizeFrame(c, r));
+    term.onResize = (c, r) => { if (this.role === 'control') this.send(resizeFrame(c, r)); };
   }
 
   size() { return { cols: this.term.cols || 80, rows: this.term.rows || 24 }; }
 
   async connect() {
     let delay = 300;
-    while (!this.closed && !this.exited && !this.detached) {
+    while (!this.closed && !this.exited) {
       this.onState({ state: 'connecting' });
       try {
         this.synced = false; this.flushPending = true;
         this.tr = await this.open();
-        if (this.detached) { const tr = this.tr; this.tr = null; tr.close(); return; }
-        this.take = false; // from now on we only reconnect, never grab it back
+        this.take = false; // reconnects keep whatever role we have
         // the first ack may have arrived while open() was finishing
         if (this.synced && this.flushPending) { this.flushPending = false; this.flushInput(); }
         this.sigTimeouts = 0;
         this.lastPong = performance.now();
         this.onState({ state: 'up', transport: this.tr.kind });
         // the daemon starts sending at rx_out; resend input it has not acked
-        this.send(resizeFrame(this.size().cols, this.size().rows));
+        if (this.role === 'control') this.send(resizeFrame(this.size().cols, this.size().rows));
         // input goes out after the daemon's first ack on this link (offsets)
         this.startPing();
         return;
       } catch (e) {
-        if (/^taken/.test(e.message)) { // another device holds it; we slept through the takeover
-          this.detached = true;
-          const m = /\(([^)]*)\)/.exec(e.message);
-          this.onState({ state: 'detached', from: m ? m[1] : '' });
-          return;
-        }
         this.onState({ state: 'down', error: e.message });
         if (/no session|session not found|gone/.test(e.message)) { this.exited = true; this.onExit(null, e.message); return; }
         if (this.parent && /signal timeout/.test(e.message) && ++this.sigTimeouts >= 2) {
@@ -436,7 +447,7 @@ export class WoshSession {
     const h = this.mgr.hello;
     return this.parent.relay({
       t: 'offer', id: this.id, key: this.key, sdp, ice: h.ice || [], relay: !!h.relay,
-      term: 'xterm-256color', cols, rows, rx_out: this.rxOut, user: h.user,
+      term: 'xterm-256color', cols, rows, rx_out: this.rxOut, user: h.user, cid: this.mgr.cid, join: !this.take,
       env: { COLORTERM: 'truecolor', TERM_PROGRAM: 'wash' },
     }).then((a) => {
       if (a.t === 'err') throw new Error(a.err || 'hop refused');
@@ -465,7 +476,7 @@ export class WoshSession {
       try {
         return await webrtcTransport(this.mgr, (sdp) => this.signal(sdp), onFrame, down);
       } catch (e) {
-        if (this.mode === 'webrtc' || /^taken/.test(e.message)) throw e;
+        if (this.mode === 'webrtc') throw e;
         console.warn('wash: WebRTC failed, using the WebSocket bridge:', e.message);
         this.preferBridge = true; // until a reload; roaming back is cheap to retry later
       }
@@ -473,27 +484,30 @@ export class WoshSession {
     return bridgeTransport(this.mgr, this.id, this.size(), this.rxOut, this.take, onFrame, down);
   }
 
-  // detach lets go of the session because another device took it; attach
-  // takes it back (which detaches that device in turn).
-  detach(from = '') {
-    if (this.closed || this.exited || this.detached) return;
-    this.detached = true;
-    this.stopPing();
-    const tr = this.tr;
-    this.tr = null;
-    if (tr) tr.close();
-    this.onState({ state: 'detached', from });
+  // takeControl makes this tab the one that types into the session; the
+  // tab that had control keeps watching.
+  takeControl() {
+    if (this.closed || this.exited || this.role === 'control') return;
+    if (this.tr) this.send(controlFrame({ op: 'take' }));
+    else this.take = true; // asked while reconnecting
   }
 
-  attach() {
-    if (!this.detached) return;
-    this.detached = false;
-    this.take = true;
-    this.connect();
+  setRole(role) {
+    if (role !== 'control' && role !== 'view') return;
+    const was = this.role;
+    this.role = role;
+    if (role === 'view') {
+      this.inBuf = new Uint8Array(0); // typing here no longer goes anywhere
+    } else if (was === 'view') {
+      // the daemon follows this with an ack: continue from its input offset
+      this.synced = false; this.everSynced = false; this.inBuf = new Uint8Array(0);
+      this.send(resizeFrame(this.size().cols, this.size().rows));
+    }
+    this.onState({ state: 'up', transport: this.tr && this.tr.kind, rtt: this.rtt });
   }
 
   linkDown() {
-    if (this.closed || this.exited || this.detached) return;
+    if (this.closed || this.exited) return;
     this.stopPing();
     this.tr = null;
     this.connect();
@@ -502,7 +516,7 @@ export class WoshSession {
   send(b) { if (this.tr) this.tr.send(b); }
 
   input(bytes) {
-    if (this.exited || this.detached) return;
+    if (this.exited || this.role === 'view') return;
     const prevEnd = this.inBase + this.inBuf.length;
     const nb = new Uint8Array(this.inBuf.length + bytes.length);
     nb.set(this.inBuf); nb.set(bytes, this.inBuf.length);
@@ -543,6 +557,7 @@ export class WoshSession {
         try {
           const c = JSON.parse(new TextDecoder().decode(b.subarray(1)));
           if (c.op === 'info' && c.token) this.token = c.token;
+          if (c.op === 'role') this.setRole(c.role);
         } catch {}
         break;
       }

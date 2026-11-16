@@ -460,21 +460,7 @@ func TestEndToEnd(t *testing.T) {
 	sub = request(ctl, map[string]any{"t": "ticket"})["ticket"].(string)
 	br2, _ := dialWS(sub)
 	defer br2.CloseNow()
-	request(br2, map[string]any{"t": "bridge", "id": sid, "cols": 100, "rows": 30, "rx_out": rx, "cid": "pageB"})
-	// other pages hear that page "pageB" now holds the session (so they stop reconnecting)
-	for {
-		typ, b, err := ctl.Read(ctx)
-		if err != nil {
-			t.Fatalf("waiting for taken: %v", err)
-		}
-		var m map[string]any
-		if typ == websocket.MessageText && json.Unmarshal(b, &m) == nil && m["t"] == "taken" && m["cid"] == "pageB" {
-			if m["id"] != sid || m["from"] == "" {
-				t.Fatalf("taken: %v", m)
-			}
-			break
-		}
-	}
+	request(br2, map[string]any{"t": "bridge", "id": sid, "cols": 100, "rows": 30, "rx_out": rx})
 	in2 := []byte("echo again-$((7*6))\r")
 	_ = br2.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, uint64(len(in)), in2))
 	outBuf.Reset()
@@ -494,31 +480,102 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal("old output replayed")
 	}
 
-	// pageB holds the session: pageA's automatic reconnect is refused, a deliberate take works
-	bridgeAs := func(cid string, take bool) map[string]any {
+	// --- shared sessions: one tab controls, the others watch --------------------------------
+	bridgeAs := func(cid string, take bool) *websocket.Conn {
 		tk := request(ctl, map[string]any{"t": "ticket"})["ticket"].(string)
 		c, _ := dialWS(tk)
-		defer c.CloseNow()
-		b, _ := json.Marshal(map[string]any{"t": "bridge", "rid": 1, "id": sid, "cols": 100, "rows": 30, "cid": cid, "take": take})
-		if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Cleanup(func() { c.CloseNow() })
+		request(c, map[string]any{"t": "bridge", "id": sid, "cols": 100, "rows": 30, "cid": cid, "take": take, "rx_out": rx})
+		return c
+	}
+	type view struct {
+		c    *websocket.Conn
+		out  bytes.Buffer
+		role string
+		ack  uint64
+	}
+	// pump reads v until done() or a read error (returned)
+	pump := func(v *view, done func() bool) error {
+		for !done() {
+			typ, b, err := v.c.Read(ctx)
+			if err != nil {
+				return err
+			}
+			if typ != websocket.MessageBinary || len(b) == 0 {
+				continue
+			}
+			switch b[0] {
+			case wosh.FOutput:
+				v.out.Write(b[9:])
+			case wosh.FAck:
+				v.ack = binary.BigEndian.Uint64(b[1:9])
+			case wosh.FControl:
+				var c struct{ Op, Role string }
+				if json.Unmarshal(b[1:], &c) == nil && c.Op == "role" {
+					v.role = c.Role
+				}
+			}
+		}
+		return nil
+	}
+	control := func(c *websocket.Conn, op string) {
+		j, _ := json.Marshal(map[string]string{"op": op})
+		if err := c.Write(ctx, websocket.MessageBinary, append([]byte{wosh.FControl}, j...)); err != nil {
 			t.Fatal(err)
 		}
-		for {
-			typ, b, err := c.Read(ctx)
-			if err != nil {
-				t.Fatalf("bridge as %s: %v", cid, err)
-			}
-			var m map[string]any
-			if typ == websocket.MessageText && json.Unmarshal(b, &m) == nil && m["rid"] == float64(1) {
-				return m
-			}
+	}
+	// br2 is a legacy peer (no cid) in control: a tab joining only watches
+	A := &view{c: bridgeAs("tabA", false)}
+	if err := pump(A, func() bool { return A.role != "" }); err != nil || A.role != "view" {
+		t.Fatalf("tabA joined as %q (%v), want view", A.role, err)
+	}
+	// a watcher's input goes nowhere
+	_ = A.c.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, A.ack, []byte("echo viewer-$((1+1))\r")))
+	// taking control: tabA controls, the legacy peer is dropped as before roles
+	A.ack = 0 // taking control is followed by an ack: the input offset to continue from
+	control(A.c, "take")
+	if err := pump(A, func() bool { return A.role == "control" }); err != nil {
+		t.Fatal(err)
+	}
+	_ = pump(A, func() bool { return A.ack > 0 })
+	if _, _, err := br2.Read(ctx); err == nil {
+		// drain until the drop
+		for err == nil {
+			_, _, err = br2.Read(ctx)
 		}
 	}
-	if m := bridgeAs("pageA", false); m["t"] != "err" || !strings.HasPrefix(fmt.Sprint(m["err"]), "taken") {
-		t.Fatalf("reconnect while another page holds the session: %v", m)
+	// tabB joins: watches; both see what tabA types
+	B := &view{c: bridgeAs("tabB", false)}
+	if err := pump(B, func() bool { return B.role != "" }); err != nil || B.role != "view" {
+		t.Fatalf("tabB joined as %q (%v), want view", B.role, err)
 	}
-	if m := bridgeAs("pageA", true); m["t"] != "bridged" {
-		t.Fatalf("deliberate take: %v", m)
+	_ = A.c.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, A.ack, []byte("echo shared-$((5*5))\r")))
+	for _, v := range []*view{A, B} {
+		if err := pump(v, func() bool { return strings.Contains(v.out.String(), "shared-25") }); err != nil {
+			t.Fatalf("output: %v (%q)", err, v.out.String())
+		}
+	}
+	if strings.Contains(A.out.String()+B.out.String(), "viewer-2") {
+		t.Fatal("a watcher's input reached the shell")
+	}
+	// tabB takes control: tabA is told it watches (and stays connected)
+	B.ack = 0 // taking control is followed by an ack: the input offset to continue from
+	control(B.c, "take")
+	if err := pump(B, func() bool { return B.role == "control" }); err != nil {
+		t.Fatal(err)
+	}
+	if err := pump(A, func() bool { return A.role == "view" }); err != nil {
+		t.Fatalf("tabA after tabB took control: %v", err)
+	}
+	_ = pump(B, func() bool { return B.ack > 0 })
+	_ = B.c.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, B.ack, []byte("echo second-$((3*3))\r")))
+	if err := pump(A, func() bool { return strings.Contains(A.out.String(), "second-9") }); err != nil {
+		t.Fatalf("tabA watching: %v", err)
+	}
+	// a reconnect of the same tab keeps control; a page reload asking to take wins
+	B2 := &view{c: bridgeAs("tabB", false)}
+	if err := pump(B2, func() bool { return B2.role != "" }); err != nil || B2.role != "control" {
+		t.Fatalf("tabB reconnect: %q %v", B2.role, err)
 	}
 
 	// --- kill from the CLI side -----------------------------------------------------------

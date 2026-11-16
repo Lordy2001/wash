@@ -72,6 +72,8 @@ type Msg struct {
 	Err   string            `json:"err,omitempty"`
 	Env   map[string]string `json:"env,omitempty"`
 	Text  string            `json:"text,omitempty"`
+	CID   string            `json:"cid,omitempty"`  // offer: client instance (shared sessions)
+	Join  bool              `json:"join,omitempty"` // offer: watch if another client has control
 }
 
 // Request sends one message to a daemon control socket and returns its reply.

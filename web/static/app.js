@@ -150,8 +150,6 @@ async function startApp(ticket) {
   mgr.onSessions = (list) => { app.sessions = list; renderTabs(); };
   mgr.onState = (s) => { $('#mgr-state').textContent = s === 'connected' ? '' : s; };
   mgr.onAuthLost = (reason) => { teardown(); show('login'); setMsg($('#login-msg'), `Signed out: ${reason}`, 'err'); };
-  mgr.onTaken = (m) => { const o = app.open.get(m.id); if (o) detachView(o, m.from); };
-  // (a refused reconnect detaches the root layer itself: see onState in openView)
   await mgr.connect(ticket);
   app.mgr = mgr;
   $('#who').textContent = `${mgr.hello.user}@${mgr.hello.host}`;
@@ -202,7 +200,7 @@ function renderTabs() {
     x.className = 'x'; x.textContent = '×'; x.title = 'kill session';
     x.onclick = (e) => { e.stopPropagation(); killSession(s); };
     t.append(x);
-    t.onclick = () => activate(s.id);
+    t.onclick = () => activate(s.id, true); // clicking a tab takes control of it
     t.ondblclick = () => renameSession(s);
     bar.append(t);
   }
@@ -220,14 +218,19 @@ function setStatus(o, layer) {
 
 function showTop(o) {
   for (const l of o.layers) l.el.hidden = l !== top(o);
+  showRole(o);
   if (app.active === o.id) requestAnimationFrame(() => { top(o).term.fit(); top(o).term.focus(); });
 }
 
-function activate(id) {
+// activate shows session id. take (a click on its tab): this tab gets control,
+// and a device that had it keeps watching. Without take (page load) the
+// session is only controlled from here if no other device has it.
+function activate(id, take = false) {
   app.active = id;
   store.set('wash.active', id);
   let o = app.open.get(id);
-  if (!o) o = openView(id);
+  if (!o) o = openView(id, take);
+  else if (take) top(o).ws.takeControl();
   for (const [k, v] of app.open) v.box.hidden = k !== id;
   renderTabs();
   showTop(o);
@@ -245,10 +248,10 @@ function newLayer(o, label) {
   return { el, term, status: '…' };
 }
 
-const statusText = (s) => s.state === 'detached' ? 'elsewhere' : s.state === 'up' ? (s.transport === 'webrtc' ? 'p2p' : 'ws') + (s.rtt != null ? ` ${Math.round(s.rtt)}ms` : '')
+const statusText = (s) => s.state === 'up' ? (s.transport === 'webrtc' ? 'p2p' : 'ws') + (s.rtt != null ? ` ${Math.round(s.rtt)}ms` : '')
   : s.state === 'connecting' ? '…' : '⚠';
 
-function openView(id) {
+function openView(id, take = false) {
   const box = document.createElement('div');
   box.className = 'view-box';
   $('#terms').append(box);
@@ -260,8 +263,9 @@ function openView(id) {
     onState: (s) => {
       root.status = statusText(s);
       if (s.error) console.warn('wash session', id, s.error);
+      if (root.ws.role === 'view') root.status += ' · view';
       setStatus(o, root);
-      if (s.state === 'detached') detachView(o, s.from);
+      showRole(o);
       if (s.state === 'up' && !root.restored) { root.restored = true; restoreHops(o); }
     },
     onExit: (code, why) => {
@@ -272,6 +276,7 @@ function openView(id) {
       if (sess && sess.remote) app.mgr.request({ t: 'kill', id: o.id }).catch(() => {}); // drop the record
     },
   });
+  root.ws.take = take;
   root.ws.onSignal = (m) => onSignal(o, root, m);
   o.layers.push(root);
   app.open.set(id, o);
@@ -280,30 +285,25 @@ function openView(id) {
   return o;
 }
 
-// A wosh session has one peer. When another device opens this session it
-// takes it over; this page lets go (no reconnecting) until asked to take it back.
-function detachView(o, from) {
-  if (o.detached) return;
-  o.detached = true;
-  for (const l of o.layers) l.ws.detach(from);
-  const d = document.createElement('div');
-  d.className = 'taken';
-  const p = document.createElement('p');
-  p.textContent = `This session was opened on another device${from ? ` (${from})` : ''}.`;
-  const b = document.createElement('button');
-  b.textContent = 'Take it back';
-  b.onclick = () => attachView(o);
-  d.append(p, b);
-  o.box.append(d);
-  o.takenEl = d;
-}
-
-function attachView(o) {
-  if (!o.detached) return;
-  o.detached = false;
-  if (o.takenEl) { o.takenEl.remove(); o.takenEl = null; }
-  for (const l of o.layers) l.ws.attach(); // the root first: hops signal through it
-  showTop(o);
+// showRole shows a bar over a session another device controls: it still
+// shows everything, but typing goes nowhere until you take control.
+function showRole(o) {
+  const viewing = top(o).ws.role === 'view';
+  if (viewing && !o.viewBar) {
+    const d = document.createElement('div');
+    d.className = 'viewbar';
+    const p = document.createElement('span');
+    p.textContent = 'Watching: another device has control of this session.';
+    const b = document.createElement('button');
+    b.textContent = 'Take control';
+    b.onclick = () => { top(o).ws.takeControl(); top(o).term.focus(); };
+    d.append(p, b);
+    o.box.append(d);
+    o.viewBar = d;
+  } else if (!viewing && o.viewBar) {
+    o.viewBar.remove();
+    o.viewBar = null;
+  }
 }
 
 // --- chained hops ------------------------------------------------------------
@@ -375,8 +375,9 @@ function pushHop(o, hop, isNew, adopt = null) {
   l.ws = new WoshSession(app.mgr, hop.id, l.term, {
     parent: parent.ws, key: hop.key,
     onState: (s) => {
-      l.status = statusText(s) + (l.root ? '' : ' ↪');
+      l.status = statusText(s) + (l.ws.role === 'view' ? ' · view' : '') + (l.root ? '' : ' ↪');
       setStatus(o, l);
+      showRole(o);
       if (s.state === 'up' && adopt && !l.adopted) { l.adopted = true; adoptHop(o, l, hop, adopt); }
     },
     onExit: (code, why) => {
