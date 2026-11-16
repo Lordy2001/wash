@@ -207,7 +207,7 @@ function renderTabs() {
     k.className = 'ctl' + (mine ? ' mine' : '');
     k.textContent = '⌨';
     k.title = mine ? 'this device has control' : 'take control (the other device keeps watching)';
-    k.onclick = (e) => { e.stopPropagation(); takeControl(s.id); };
+    k.onclick = (e) => { e.stopPropagation(); confirmTake(s.id); };
     t.append(k, x);
     t.onclick = () => activate(s.id);
     t.ondblclick = () => renameSession(s);
@@ -236,7 +236,6 @@ function setStatus(o, layer) {
 
 function showTop(o) {
   for (const l of o.layers) l.el.hidden = l !== top(o);
-  showRole(o);
   if (app.active === o.id) requestAnimationFrame(() => { top(o).term.fit(); top(o).term.focus(); });
 }
 
@@ -285,7 +284,6 @@ function openView(id, take = false) {
       if (s.error) console.warn('wash session', id, s.error);
       if (root.ws.role === 'view') root.status += ' · view';
       setStatus(o, root);
-      showRole(o);
       if (s.state === 'up' && !root.restored) { root.restored = true; restoreHops(o); }
     },
     onExit: (code, why) => {
@@ -317,25 +315,38 @@ function takeControl(id) {
   else top(o).term.focus();
 }
 
-// showRole shows a bar over a session another device controls: it still
-// shows everything, but typing goes nowhere until you take control.
-function showRole(o) {
-  const viewing = top(o).ws.role === 'view';
-  if (viewing && !o.viewBar) {
-    const d = document.createElement('div');
-    d.className = 'viewbar';
-    const p = document.createElement('span');
-    p.textContent = 'Watching: another device has control of this session.';
-    const b = document.createElement('button');
-    b.textContent = 'Take control';
-    b.onclick = () => takeControl(o.id);
-    d.append(p, b);
-    o.box.append(d);
-    o.viewBar = d;
-  } else if (!viewing && o.viewBar) {
-    o.viewBar.remove();
-    o.viewBar = null;
-  }
+// confirmTake asks before taking control of session id (the tab's ⌨ button):
+// "Take control" takes it; a tap anywhere else keeps watching.
+function confirmTake(id) {
+  const o = app.open.get(id);
+  if (o && hasControl(top(o))) return; // already ours
+  const sess = app.sessions.find((x) => x.id === id);
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  const box = document.createElement('div');
+  box.className = 'modal';
+  box.setAttribute('role', 'dialog');
+  const p = document.createElement('p');
+  p.textContent = `Take control of “${sess ? sess.name : id}”?`;
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = 'The device that has it now keeps watching.';
+  const b = document.createElement('button');
+  b.textContent = 'Take control';
+  box.append(p, hint, b);
+  bg.append(box);
+  const close = () => {
+    bg.remove();
+    document.removeEventListener('keydown', onKey, true);
+    const t = activeTerm();
+    if (t) t.focus();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+  bg.addEventListener('pointerdown', (e) => { if (e.target === bg) { e.preventDefault(); close(); } });
+  b.onclick = () => { close(); takeControl(id); };
+  document.addEventListener('keydown', onKey, true);
+  document.body.append(bg);
+  b.focus();
 }
 
 // --- chained hops ------------------------------------------------------------
@@ -409,7 +420,6 @@ function pushHop(o, hop, isNew, adopt = null) {
     onState: (s) => {
       l.status = statusText(s) + (l.ws.role === 'view' ? ' · view' : '') + (l.root ? '' : ' ↪');
       setStatus(o, l);
-      showRole(o);
       if (s.state === 'up' && adopt && !l.adopted) { l.adopted = true; adoptHop(o, l, hop, adopt); }
     },
     onExit: (code, why) => {

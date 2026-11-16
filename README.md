@@ -263,12 +263,13 @@ purging pending keys after the TTL.
   features that the browser does not provide.
 * Shared sessions (needs a wosh daemon with shared-session support, i.e.
   sessions started after updating wosh): several devices can show a session
-  at once. One of them controls it (keyboard and size); the others watch,
-  with a "Watching" bar and a **Take control** button. Whoever has the
+  at once. One of them controls it (keyboard and size); the others watch
+  (their tab shows `· view`). Whoever has the
   session first keeps it: opening it on another device (or reloading the
   page) only watches, unless nobody controls it. The **⌨ button** on a tab
-  (green when this device has control) takes control of that session; the
-  device that had it keeps watching. Clicking the tab itself only switches. Control
+  (green when this device has control) asks "Take control?": confirming
+  takes control of that session and the device that had it keeps watching;
+  tapping anywhere else keeps watching. Clicking the tab itself only switches. Control
   is per session, so the desktop can type in one tab while the phone types
   in another. If the controlling device goes away for 10 s, the device that
   has watched longest gets control. The controller sets the terminal size:

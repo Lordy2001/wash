@@ -75,9 +75,6 @@ header button { padding: 3px 9px; font-size: 13px; }
 #terms { flex: 1; position: relative; min-height: 0; background: #101317; }
 .view-box { position: absolute; inset: 0; }
 .term { position: absolute; inset: 4px 2px 2px 6px; }
-.viewbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap;
-  align-items: center; justify-content: center; gap: 8px 12px; padding: 6px 12px; font-size: 13px;
-  color: #d8dee9; background: rgba(40, 46, 56, 0.92); border-top: 1px solid #3b4252; }
 
 /* extra keys for touch screens: under the terminal, above the on-screen keyboard */
 #keys { display: none; gap: 4px; padding: 4px; background: var(--panel); border-top: 1px solid var(--line);
@@ -87,3 +84,12 @@ body.touch #keys { display: flex; }
   border-radius: 6px; -webkit-tap-highlight-color: transparent; }
 #keys button.armed { background: #3b5070; border-color: #61afef; color: #fff; }
 #keys button.locked { background: #61afef; border-color: #61afef; color: #0b0d10; }
+
+/* take-control confirmation */
+.modal-bg { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  padding: 16px; background: rgba(0, 0, 0, 0.55); }
+.modal { max-width: 320px; width: 100%; padding: 18px; border-radius: 10px; background: var(--panel);
+  border: 1px solid var(--line); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6); text-align: center; }
+.modal p { margin: 0 0 8px; font-size: 15px; }
+.modal .hint { color: var(--dim); font-size: 13px; margin-bottom: 16px; }
+.modal button { width: 100%; min-height: 44px; font-size: 15px; }
