@@ -443,15 +443,30 @@ func (s *Server) handleCA(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.sessionUser(r)
-	writeJSON(w, 200, map[string]any{
-		"origins":      s.cfg.Origins,
+	out := map[string]any{
 		"ca":           s.cfg.CAFile != "",
 		"registration": map[bool]string{true: "open", false: "request"}[s.cfg.Registration],
 		"pending_ttl":  PendingTTL.String(),
 		"user":         user,
 		"logged_in":    ok,
-		"version":      s.cfg.Version,
-	})
+	}
+	// The host names are only needed to send someone who opened the site by IP
+	// address to a name that works. Everyone else (e.g. the public, coming in by
+	// the public name) must not learn the internal names.
+	if byIP(r.Host) {
+		out["origins"] = s.cfg.Origins
+	}
+	if ok {
+		out["version"] = s.cfg.Version
+	}
+	writeJSON(w, 200, out)
+}
+
+func byIP(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return net.ParseIP(strings.Trim(host, "[]")) != nil
 }
 
 // OpenRegistration lets user create passkeys on the website for d (at most

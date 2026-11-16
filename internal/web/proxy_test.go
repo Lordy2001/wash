@@ -3,6 +3,7 @@ package web
 import (
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -49,5 +50,23 @@ func TestForwardedProtoNeedsTrustedPeer(t *testing.T) {
 	r.RemoteAddr = "127.0.0.1:1"
 	if !s.viaProxy(r) {
 		t.Fatal("ignored the trusted proxy")
+	}
+}
+
+func TestConfigHidesOriginsAndVersion(t *testing.T) {
+	s := &Server{cfg: Config{Origins: []string{"https://internal.example:8443"}, Version: "9.9"}}
+	for host, want := range map[string]bool{"internal.example:8443": false, "public.example": false,
+		"192.0.2.1:8443": true, "[2001:db8::1]:8443": true, "192.0.2.1": true} {
+		r := httptest.NewRequest("GET", "/api/config", nil)
+		r.Host = host
+		w := httptest.NewRecorder()
+		s.handleConfig(w, r)
+		body := w.Body.String()
+		if got := strings.Contains(body, "internal.example"); got != want {
+			t.Errorf("host %s: origins shown=%v, want %v (%s)", host, got, want, body)
+		}
+		if strings.Contains(body, "9.9") {
+			t.Errorf("host %s: version shown before sign-in", host)
+		}
 	}
 }
