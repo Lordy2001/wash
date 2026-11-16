@@ -4,6 +4,7 @@
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
+html, body { overscroll-behavior: none; } /* no pull-to-refresh */
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 [hidden] { display: none !important; }
@@ -74,7 +75,7 @@ header button { padding: 3px 9px; font-size: 13px; }
 .tab .ctl.mine { opacity: 1; color: #98c379; cursor: default; }
 #terms { flex: 1; position: relative; min-height: 0; background: #101317; }
 .view-box { position: absolute; inset: 0; }
-.term { position: absolute; inset: 4px 2px 2px 6px; }
+.term { position: absolute; inset: 4px 2px 2px 6px; touch-action: none; } /* drags scroll the terminal */
 
 /* extra keys for touch screens: under the terminal, above the on-screen keyboard */
 #keys { display: none; gap: 4px; padding: 4px; background: var(--panel); border-top: 1px solid var(--line);

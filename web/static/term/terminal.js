@@ -310,7 +310,12 @@ export class Terminal {
     this._on(window, 'mouseup', (e) => this._mouseup(e));
     this._on(c, 'wheel', (e) => this._wheel(e), { passive: false });
     this._on(c, 'contextmenu', (e) => { if (this._mouseReporting(e)) e.preventDefault(); });
-    this._on(c, 'touchstart', () => this.focus(), { passive: true });
+    // touch: a vertical drag scrolls (scrollback, or the app like a wheel),
+    // with a fling; a tap focuses (opens the on-screen keyboard)
+    this._on(c, 'touchstart', (e) => this._touchstart(e), { passive: true });
+    this._on(c, 'touchmove', (e) => this._touchmove(e), { passive: false });
+    this._on(c, 'touchend', (e) => this._touchend(e), { passive: false });
+    this._on(c, 'touchcancel', () => { this._touch = null; }, { passive: true });
   }
 
   // On-screen keyboards (Android's in particular) do not send Backspace as a
@@ -538,6 +543,51 @@ export class Terminal {
     }
     s.scrollView(-lines);
     this._schedule();
+  }
+
+  _touchstart(e) {
+    if (e.touches.length !== 1) { this._touch = null; return; }
+    const t = e.touches[0];
+    cancelAnimationFrame(this._fling || 0);
+    this._fling = 0;
+    this._touch = { x0: t.clientX, y0: t.clientY, y: t.clientY, x: t.clientX, moved: false, v: 0, at: performance.now() };
+  }
+
+  _touchmove(e) {
+    const st = this._touch;
+    if (!st || e.touches.length !== 1) return;
+    const t = e.touches[0];
+    if (!st.moved && Math.abs(t.clientY - st.y0) < 8) return;
+    if (!st.moved && Math.abs(t.clientX - st.x0) > Math.abs(t.clientY - st.y0)) { this._touch = null; return; }
+    st.moved = true;
+    e.preventDefault(); // no page scroll or pull-to-refresh
+    const dy = st.y - t.clientY, now = performance.now();
+    const dt = Math.max(1, now - st.at);
+    st.v = 0.8 * (dy / dt) + 0.2 * st.v; // px per ms, smoothed
+    st.y = t.clientY; st.x = t.clientX; st.at = now;
+    this._scrollBy(dy, t.clientX, t.clientY);
+  }
+
+  _touchend(e) {
+    const st = this._touch;
+    this._touch = null;
+    if (!st) return;
+    if (!st.moved) { this.focus(); return; }
+    e.preventDefault(); // no click/mousedown emulation after a drag
+    let v = st.v;
+    if (performance.now() - st.at > 80 || Math.abs(v) < 0.3) return;
+    let last = performance.now();
+    const step = (now) => {
+      const dt = now - last; last = now;
+      this._scrollBy(v * dt, st.x, st.y);
+      v *= Math.pow(0.995, dt);
+      this._fling = Math.abs(v) > 0.05 && !this._disposed ? requestAnimationFrame(step) : 0;
+    };
+    this._fling = requestAnimationFrame(step);
+  }
+
+  _scrollBy(dy, clientX, clientY) {
+    this._wheel({ deltaY: dy, deltaMode: 0, clientX, clientY, shiftKey: false, ctrlKey: false, altKey: false, preventDefault() {} });
   }
 
   _linkAt(pos) {

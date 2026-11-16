@@ -284,7 +284,9 @@ purging pending keys after the TTL.
   so Ctrl then `c` is ^C. Keys repeat while held. Letters are sent as they
   are typed (on-screen keyboards otherwise hold back whole words), and the
   page shrinks to the visible area so the keyboard never covers the bottom
-  of the terminal.
+  of the terminal. Dragging on the terminal scrolls it (scrollback, or the
+  app like a mouse wheel), with a fling; a tap opens the keyboard. Pull to
+  refresh is off.
   A session whose daemon predates this falls back to one peer: opening it
   elsewhere takes it over, and the devices trade it back and forth.
 * The wosh protocol types in `internal/wosh` mirror wosh's internal

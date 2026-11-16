@@ -187,3 +187,27 @@ test('extra keys: sticky Ctrl/Alt, arrows, and live on-screen typing', async () 
     'l', 's', '\x7f', 'l', '\x03']);
   t.dispose();
 });
+
+test('touch: a vertical drag scrolls back, a tap focuses', async () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  for (let i = 0; i < 100; i++) t.write(`line ${i}\r\n`);
+  const c = t.canvas;
+  let focused = 0;
+  t.textarea.focus = () => { focused++; };
+  const touch = (type, y) => {
+    let prevented = false;
+    c.dispatch(type, { touches: type === 'touchend' ? [] : [{ clientX: 50, clientY: y }], preventDefault() { prevented = true; } });
+    return prevented;
+  };
+  touch('touchstart', 100);
+  assert.equal(touch('touchmove', 104), false, 'small moves are not a drag yet');
+  assert.equal(touch('touchmove', 160), true, 'a drag is ours (no page scroll / pull-to-refresh)');
+  touch('touchmove', 280);
+  touch('touchend', 280);
+  assert.ok(t.screen.viewOffset >= 8, `scrolled back ${t.screen.viewOffset} lines`);
+  assert.equal(focused, 0, 'a drag does not open the keyboard');
+  touch('touchstart', 200); touch('touchend', 200);
+  assert.equal(focused, 1, 'a tap focuses');
+  t.dispose();
+});
