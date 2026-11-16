@@ -133,3 +133,23 @@ test('fixed grid (watching a shared session): font shrinks to fit, never grows',
   assert.equal(resized, 1);
   t.dispose();
 });
+
+test('on-screen keyboard backspace (Android): a delete in the textarea is DEL', async () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  const ta = t.textarea;
+  assert.ok(ta.value.length > 0, 'the textarea keeps text to delete');
+  // Gboard: keydown is keyCode 229 (ignored), then the IME deletes a character
+  ta.dispatch('keydown', { key: 'Unidentified', keyCode: 229 });
+  ta.value = ta.value.slice(0, -1);
+  ta.dispatch('input', { inputType: 'deleteContentBackward' });
+  ta.value = ta.value.slice(0, -1);
+  ta.dispatch('input', { inputType: 'deleteContentBackward' });
+  ta.dispatch('input', { inputType: 'deleteWordBackward' });
+  ta.dispatch('input', { inputType: 'insertText', data: 'x' });
+  assert.deepEqual(sent, ['\x7f', '\x7f', '\x17', 'x']);
+  assert.equal(ta.value, '  ', 'refilled after each edit');
+  t.dispose();
+});

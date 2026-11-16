@@ -38,6 +38,8 @@ export async function browserImageDecoder(img, bytes, { compressed, format, widt
   return { bitmap: bm, width, height };
 }
 
+const INPUT_PAD = '  ';
+
 export class Terminal {
   constructor(container, options = {}) {
     this.opts = {
@@ -78,6 +80,7 @@ export class Terminal {
     });
     container.appendChild(ta);
     this.textarea = ta;
+    this._resetInput();
 
     this.utf8 = new TextDecoder('utf-8');
     this.enc = new TextEncoder();
@@ -250,7 +253,7 @@ export class Terminal {
     this._on(ta, 'compositionend', (e) => {
       this._composing = false;
       if (e.data) this._input(e.data);
-      ta.value = '';
+      this._resetInput();
     });
     this._on(ta, 'input', (e) => {
       if (this._composing || e.isComposing) return;
@@ -258,10 +261,12 @@ export class Terminal {
         if (e.data) this._input(e.data);
       } else if (e.inputType === 'deleteContentBackward') {
         this._input('\x7f');
+      } else if (e.inputType === 'deleteWordBackward') {
+        this._input('\x17'); // ^W
       } else if (e.inputType === 'insertLineBreak') {
         this._input('\r');
       }
-      ta.value = '';
+      this._resetInput();
     });
     this._on(ta, 'paste', (e) => {
       e.preventDefault();
@@ -275,6 +280,7 @@ export class Terminal {
       e.clipboardData.setData('text/plain', t);
     });
     this._on(ta, 'focus', () => {
+      this._resetInput();
       this.renderer.focused = true;
       if (this.screen.modes.focus) this._emit('\x1b[I');
       this._schedule();
@@ -292,6 +298,17 @@ export class Terminal {
     this._on(c, 'wheel', (e) => this._wheel(e), { passive: false });
     this._on(c, 'contextmenu', (e) => { if (this._mouseReporting(e)) e.preventDefault(); });
     this._on(c, 'touchstart', () => this.focus(), { passive: true });
+  }
+
+  // On-screen keyboards (Android's in particular) do not send Backspace as a
+  // key: they delete text in the textarea, and an empty textarea has nothing
+  // to delete, so no event fires at all. Keep a little text before the caret
+  // so each delete arrives as an input event (deleteContentBackward).
+  _resetInput() {
+    const ta = this.textarea;
+    if (ta.value === INPUT_PAD && ta.selectionStart === INPUT_PAD.length) return;
+    ta.value = INPUT_PAD;
+    if (ta.setSelectionRange) ta.setSelectionRange(INPUT_PAD.length, INPUT_PAD.length);
   }
 
   _input(str) {
