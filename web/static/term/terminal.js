@@ -95,6 +95,14 @@ export class Terminal {
     this._wheelAcc = 0;
     this._disposed = false;
     this._fixed = null;                  // {cols, rows}: draw this grid (shared session, watching)
+    // Sticky modifiers for touch screens (an on-screen Ctrl/Alt key): 0 off,
+    // 1 for the next key, 2 locked. Assign a shared object to share them.
+    this.mods = { ctrl: 0, alt: 0 };
+    this.onMods = null;
+    // liveIME: send text while the on-screen keyboard is still composing a
+    // word (Android holds whole words otherwise), as edits (text and DELs).
+    this.liveIME = !!this.opts.liveIME;
+    this._comp = null;
     this._font = this.opts.fontSize;     // font size in use (smaller than opts.fontSize when fixed)
 
     this._bind();
@@ -249,22 +257,27 @@ export class Terminal {
   _bind() {
     const ta = this.textarea;
     this._on(ta, 'keydown', (e) => this._keydown(e));
-    this._on(ta, 'compositionstart', () => { this._composing = true; });
+    this._on(ta, 'compositionstart', () => { this._composing = true; this._comp = ''; });
+    this._on(ta, 'compositionupdate', (e) => {
+      if (this.liveIME) this._compTo(e.data || '');
+    });
     this._on(ta, 'compositionend', (e) => {
       this._composing = false;
-      if (e.data) this._input(e.data);
+      if (this.liveIME) this._compTo(e.data || '');
+      else if (e.data) this._typed(e.data);
+      this._comp = null;
       this._resetInput();
     });
     this._on(ta, 'input', (e) => {
       if (this._composing || e.isComposing) return;
       if (e.inputType === 'insertText' || e.inputType === 'insertReplacementText') {
-        if (e.data) this._input(e.data);
+        if (e.data) this._typed(e.data);
       } else if (e.inputType === 'deleteContentBackward') {
-        this._input('\x7f');
+        this.pressKey('Backspace');
       } else if (e.inputType === 'deleteWordBackward') {
         this._input('\x17'); // ^W
       } else if (e.inputType === 'insertLineBreak') {
-        this._input('\r');
+        this.pressKey('Enter');
       }
       this._resetInput();
     });
@@ -311,6 +324,56 @@ export class Terminal {
     if (ta.setSelectionRange) ta.setSelectionRange(INPUT_PAD.length, INPUT_PAD.length);
   }
 
+  /**
+   * pressKey sends one key as if typed, with the sticky modifiers: a
+   * KeyboardEvent key name ('Escape', 'Tab', 'ArrowUp', 'Enter', ...) or a
+   * single character. For on-screen key bars.
+   */
+  pressKey(key) {
+    const m = this._takeMods();
+    const seq = encodeKey({ key, code: '', ctrlKey: m.ctrl, altKey: m.alt, shiftKey: false, metaKey: false }, this.screen.modes);
+    if (seq === null) return;
+    if (this._sel) this._clearSelection();
+    this._input(seq);
+  }
+
+  setMod(name, state) {
+    if (!(name in this.mods)) return;
+    this.mods[name] = state;
+    if (this.onMods) this.onMods(this.mods);
+  }
+
+  // _takeMods returns the modifiers for one key; one-shot ones are used up.
+  _takeMods() {
+    const m = { ctrl: this.mods.ctrl > 0, alt: this.mods.alt > 0 };
+    let used = false;
+    for (const k of ['ctrl', 'alt']) if (this.mods[k] === 1) { this.mods[k] = 0; used = true; }
+    if (used && this.onMods) this.onMods(this.mods);
+    return m;
+  }
+
+  // _typed: text from the on-screen keyboard, with sticky modifiers applied
+  // to each character while they are on.
+  _typed(str) {
+    if (!this.mods.ctrl && !this.mods.alt) { this._input(str); return; }
+    for (const ch of str) {
+      if (this.mods.ctrl || this.mods.alt) this.pressKey(ch);
+      else this._input(ch);
+    }
+  }
+
+  // _compTo moves what we sent for the current composition to text (live
+  // IME): DEL what changed, then send the new part.
+  _compTo(text) {
+    const prev = this._comp ?? '';
+    let i = 0;
+    while (i < prev.length && i < text.length && prev[i] === text[i]) i++;
+    const del = [...prev.slice(i)].length;
+    if (del) this._input('\x7f'.repeat(del));
+    if (text.length > i) this._typed(text.slice(i));
+    this._comp = text;
+  }
+
   _input(str) {
     this._snapToBottom();
     this._emit(str);
@@ -354,8 +417,10 @@ export class Terminal {
       if (d) { e.preventDefault(); s.scrollView(d); this._schedule(); return; }
     }
     const altGraph = typeof e.getModifierState === 'function' && e.getModifierState('AltGraph');
+    const isMod = ['Control', 'Alt', 'Shift', 'Meta', 'AltGraph'].includes(e.key);
+    const sticky = (this.mods.ctrl || this.mods.alt) && !isMod ? this._takeMods() : { ctrl: false, alt: false };
     const seq = encodeKey({
-      key: e.key, code: e.code, ctrlKey: e.ctrlKey && !altGraph, altKey: e.altKey && !altGraph,
+      key: e.key, code: e.code, ctrlKey: (e.ctrlKey || sticky.ctrl) && !altGraph, altKey: (e.altKey || sticky.alt) && !altGraph,
       shiftKey: e.shiftKey, metaKey: e.metaKey, altGraph,
     }, s.modes);
     if (seq === null) return;

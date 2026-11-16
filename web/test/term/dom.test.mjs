@@ -153,3 +153,37 @@ test('on-screen keyboard backspace (Android): a delete in the textarea is DEL', 
   assert.equal(ta.value, '  ', 'refilled after each edit');
   t.dispose();
 });
+
+test('extra keys: sticky Ctrl/Alt, arrows, and live on-screen typing', async () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15, liveIME: true });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  const ta = t.textarea;
+  let modsSeen = null;
+  t.onMods = (m) => { modsSeen = { ...m }; };
+  t.pressKey('Escape'); t.pressKey('Tab'); t.pressKey('ArrowUp'); t.pressKey('|');
+  // Ctrl armed for one key, then typed on the soft keyboard: ^C, then plain
+  t.setMod('ctrl', 1);
+  ta.dispatch('input', { inputType: 'insertText', data: 'cd' });
+  assert.deepEqual(modsSeen, { ctrl: 0, alt: 0 }, 'one-shot Ctrl is used up');
+  // Alt locked: every key gets ESC-prefixed until released
+  t.setMod('alt', 2);
+  t.pressKey('b'); t.pressKey('f');
+  t.setMod('alt', 0);
+  // Gboard composes words: live mode sends letters as they come, and edits
+  ta.dispatch('compositionstart', {});
+  ta.dispatch('compositionupdate', { data: 'l' });
+  ta.dispatch('compositionupdate', { data: 'ls' });
+  ta.dispatch('compositionupdate', { data: 'l' }); // backspace inside the word
+  ta.dispatch('compositionupdate', { data: 'll' });
+  ta.dispatch('compositionend', { data: 'll' });
+  // Ctrl then a letter while Gboard composes: ^C at once, not after a space
+  t.setMod('ctrl', 1);
+  ta.dispatch('compositionstart', {});
+  ta.dispatch('compositionupdate', { data: 'c' });
+  ta.dispatch('compositionend', { data: 'c' });
+  assert.deepEqual(sent, ['\x1b', '\t', '\x1b[A', '|', '\x03', 'd', '\x1bb', '\x1bf',
+    'l', 's', '\x7f', 'l', '\x03']);
+  t.dispose();
+});

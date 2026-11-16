@@ -136,6 +136,7 @@ const app = {
   mgr: null,
   sessions: [],  // from washd
   open: new Map(), // id -> view {id, box, layers: [{ws, term, el, status, host}]}
+  mods: { ctrl: 0, alt: 0 }, // sticky Ctrl/Alt from the extra-keys bar (shared by all terminals)
   active: null,
 };
 
@@ -258,9 +259,11 @@ function newLayer(o, label) {
   el.className = 'term';
   o.box.append(el);
   const term = new Terminal(el, {
-    fontSize: fontSize(), scrollback: 5000, theme,
+    fontSize: fontSize(), scrollback: 5000, theme, liveIME: touch,
     copyOnSelect: true, ctrlCopyPaste: true,
   });
+  term.mods = app.mods; // the key bar's Ctrl/Alt apply to whichever terminal you type in
+  term.onMods = renderKeys;
   term.onTitle = (t) => { if (app.active === o.id && top(o).term === term) document.title = t ? `${t} — wash` : `${label} — wash`; };
   return { el, term, status: '…' };
 }
@@ -490,6 +493,67 @@ async function renameSession(s) {
   try { await app.mgr.request({ t: 'rename', id: s.id, name }); } catch (e) { alert(e.message); }
 }
 
+// --- touch screens: extra keys, on-screen keyboard -------------------------------
+
+const touch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+
+function activeTerm() {
+  const o = app.active && app.open.get(app.active);
+  return o ? top(o).term : null;
+}
+
+// renderKeys shows the sticky modifiers: armed (next key) or locked.
+function renderKeys() {
+  for (const b of document.querySelectorAll('#keys [data-mod]')) {
+    const st = app.mods[b.dataset.mod];
+    b.classList.toggle('armed', st === 1);
+    b.classList.toggle('locked', st === 2);
+  }
+}
+
+// setupKeys wires the extra-keys bar. Buttons never take the focus (so the
+// on-screen keyboard stays up); keys repeat while held; Ctrl/Alt: tap for
+// the next key, tap again to lock, again to release.
+function setupKeys() {
+  const bar = $('#keys');
+  document.body.classList.toggle('touch', touch);
+  let timer = 0, rep = 0;
+  const stop = () => { clearTimeout(timer); clearInterval(rep); timer = rep = 0; };
+  bar.addEventListener('pointerdown', (e) => {
+    const b = e.target.closest('button');
+    e.preventDefault(); // keep the terminal focused
+    if (!b) return;
+    const t = activeTerm();
+    if (!t) return;
+    if (b.dataset.mod) {
+      const k = b.dataset.mod;
+      t.setMod(k, (app.mods[k] + 1) % 3);
+      return;
+    }
+    const key = b.dataset.key;
+    t.pressKey(key);
+    stop();
+    timer = setTimeout(() => { rep = setInterval(() => t.pressKey(key), 70); }, 400);
+  });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) bar.addEventListener(ev, stop);
+  bar.addEventListener('contextmenu', (e) => e.preventDefault());
+}
+
+// fitViewport keeps the page inside the visible area, so the on-screen
+// keyboard never covers the bottom of the terminal (the terminal refits to
+// the smaller space). Browsers that honour interactive-widget=resizes-content
+// already shrink the layout; this covers the rest (and iOS).
+function fitViewport() {
+  const vv = window.visualViewport;
+  const main = $('#main');
+  if (!vv || !main) return;
+  const covered = window.innerHeight - vv.height;
+  main.style.top = `${vv.offsetTop}px`;
+  main.style.height = `${vv.height}px`;
+  main.style.bottom = 'auto';
+  document.body.classList.toggle('kbd-open', covered > 120);
+}
+
 // fontSize: this device's choice (A−/A+), else smaller on phone-sized screens.
 function fontSize() {
   const chosen = Number(store.get('wash.fontSize'));
@@ -518,6 +582,12 @@ function zoom(d) {
 // --- boot -----------------------------------------------------------------------
 
 async function boot() {
+  setupKeys();
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', fitViewport);
+    window.visualViewport.addEventListener('scroll', fitViewport);
+    fitViewport();
+  }
   $('#login-user').value = store.get('wash.user') || '';
   $('#reg-user').value = store.get('wash.user') || '';
   $('#reg-name').placeholder = defaultDeviceName();

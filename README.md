@@ -277,6 +277,13 @@ purging pending keys after the TTL.
 * Phones get a smaller default font, the tabs get their own row that
   scrolls sideways, and text size and sign out move into a ☰ menu at the
   top right. The font size is chosen per device.
+* Touch screens get an extra-keys bar under the terminal: Esc, Tab, Ctrl,
+  Alt, arrows, `| ~ - / :`. Ctrl and Alt are sticky (tap: the next key,
+  tap again: locked, again: off) and also apply to the on-screen keyboard,
+  so Ctrl then `c` is ^C. Keys repeat while held. Letters are sent as they
+  are typed (on-screen keyboards otherwise hold back whole words), and the
+  page shrinks to the visible area so the keyboard never covers the bottom
+  of the terminal.
   A session whose daemon predates this falls back to one peer: opening it
   elsewhere takes it over, and the devices trade it back and forth.
 * The wosh protocol types in `internal/wosh` mirror wosh's internal
