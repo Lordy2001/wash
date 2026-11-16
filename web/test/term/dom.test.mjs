@@ -9,7 +9,11 @@ function ctx2d() {
   return new Proxy({}, {
     get(t, k) {
       if (k in t) return t[k];
-      if (k === 'measureText') return () => ({ width: 9, fontBoundingBoxAscent: 14, fontBoundingBoxDescent: 4 });
+      if (k === 'measureText') {
+        // metrics scale with the font (15px: 9 wide, 18 high)
+        const fs = Number(/(\d+(?:\.\d+)?)px/.exec(t.font || '15px')?.[1] || 15);
+        return () => ({ width: fs * 9 / 15, fontBoundingBoxAscent: fs * 14 / 15, fontBoundingBoxDescent: fs * 4 / 15 });
+      }
       return (...a) => { if (k in calls) calls[k]++; };
     },
     set(t, k, v) { t[k] = v; return true; },
@@ -105,5 +109,27 @@ test('terminal renders, resizes and encodes input', async () => {
   t.write('\x1b[?2026l');
   flush();
   assert.ok(calls.fillText > before);
+  t.dispose();
+});
+
+test('fixed grid (watching a shared session): font shrinks to fit, never grows', async () => {
+  const el = new El('div'); // 900 x 360
+  const t = new Terminal(el, { fontSize: 15 });
+  let resized = 0;
+  t.onResize = () => { resized++; };
+  await Promise.resolve();
+  resized = 0;
+  t.setFixedSize({ cols: 200, rows: 50 }); // a big desktop session watched on a small screen
+  assert.equal(t.cols, 200); assert.equal(t.rows, 50);
+  assert.ok(t._font < 15, `font ${t._font}`);
+  const g = t.renderer.gridSize(900, 360);
+  assert.ok(g.cols >= 200 && g.rows >= 50, `grid ${g.cols}x${g.rows} holds 200x50`);
+  t.setFixedSize({ cols: 40, rows: 12 }); // a phone session watched on a big screen
+  assert.equal(t._font, 15, 'never larger than the chosen font');
+  assert.equal(t.cols, 40);
+  assert.equal(resized, 0, 'a fixed grid is not reported as our size');
+  t.setFixedSize(null); // took control: fit this screen again
+  assert.equal(t.cols, 100); assert.equal(t.rows, 20);
+  assert.equal(resized, 1);
   t.dispose();
 });

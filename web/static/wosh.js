@@ -398,6 +398,7 @@ export class WoshSession {
     // never says, and then we always have control).
     this.role = 'control';
     this.take = false;          // next connect asks for control (else: control only if free)
+    this.shared = null;         // {cols, rows} the controller set (daemon "size" messages)
     this.rtt = null; this.lastPong = 0; this.pingN = 0; this.pingSent = new Map();
     this.preferBridge = transport === 'bridge';
     term.onData = (d) => this.input(typeof d === 'string' ? enc.encode(d) : d);
@@ -492,10 +493,17 @@ export class WoshSession {
     else this.take = true; // asked while reconnecting
   }
 
+  // layout: watching draws the controller's grid (scaled to fit); in
+  // control the grid fits this screen and its size goes to the session.
+  layout() {
+    if (this.term.setFixedSize) this.term.setFixedSize(this.role === 'view' ? this.shared : null);
+  }
+
   setRole(role) {
     if (role !== 'control' && role !== 'view') return;
     const was = this.role;
     this.role = role;
+    this.layout();
     if (role === 'view') {
       this.inBuf = new Uint8Array(0); // typing here no longer goes anywhere
     } else if (was === 'view') {
@@ -562,6 +570,7 @@ export class WoshSession {
           const c = JSON.parse(new TextDecoder().decode(b.subarray(1)));
           if (c.op === 'info' && c.token) this.token = c.token;
           if (c.op === 'role') this.setRole(c.role);
+          if (c.op === 'size' && c.cols > 0 && c.rows > 0) { this.shared = { cols: c.cols, rows: c.rows }; this.layout(); }
         } catch {}
         break;
       }

@@ -91,6 +91,8 @@ export class Terminal {
     this._lastMouseCell = '';
     this._wheelAcc = 0;
     this._disposed = false;
+    this._fixed = null;                  // {cols, rows}: draw this grid (shared session, watching)
+    this._font = this.opts.fontSize;     // font size in use (smaller than opts.fontSize when fixed)
 
     this._bind();
     this._ro = new ResizeObserver(() => this.fit());
@@ -115,15 +117,56 @@ export class Terminal {
     const w = this.container.clientWidth, h = this.container.clientHeight;
     if (!w || !h) return;
     this.renderer.resizeCanvas(w, h);
-    const { cols, rows } = this.renderer.gridSize(w, h);
+    let cols, rows;
+    if (this._fixed) {
+      ({ cols, rows } = this._fixed);
+      this._fitFont(w, h, cols, rows);
+    } else {
+      this._setFont(this.opts.fontSize);
+      ({ cols, rows } = this.renderer.gridSize(w, h));
+    }
     if (cols !== this.screen.cols || rows !== this.screen.rows) {
       this.screen.resize(cols, rows);
       this._clearSelection();
     }
     const changed = cols !== this.cols || rows !== this.rows;
     this.cols = cols; this.rows = rows;
-    if (changed && !silent && this.onResize) this.onResize(cols, rows);
+    if (changed && !silent && !this._fixed && this.onResize) this.onResize(cols, rows);
     this._schedule();
+  }
+
+  /**
+   * Draw a fixed grid (cols x rows) instead of fitting the grid to the
+   * container: the font shrinks until it fits (never grows past fontSize).
+   * null goes back to fitting. Used while watching a shared session, whose
+   * size the controlling device sets. onResize is not called while fixed.
+   */
+  setFixedSize(size) {
+    const next = size && size.cols > 0 && size.rows > 0 ? { cols: size.cols, rows: size.rows } : null;
+    if (JSON.stringify(next) === JSON.stringify(this._fixed)) return;
+    this._fixed = next;
+    this.fit();
+  }
+
+  _setFont(px) {
+    if (px === this._font) return;
+    this._font = px;
+    this.renderer.setFont(this.opts.fontFamily, px);
+  }
+
+  _fitFont(w, h, cols, rows) {
+    const max = this.opts.fontSize;
+    // estimate from the current cell size, then step down until it fits
+    const cw = this.renderer.s.cellW / this._font, ch = this.renderer.s.cellH / this._font;
+    let px = Math.min(max, Math.floor(Math.min(w / (cols * cw), h / (rows * ch)) * 2) / 2 + 0.5);
+    px = Math.max(4, px);
+    this._setFont(px);
+    for (let i = 0; i < 40 && px > 4; i++) {
+      const g = this.renderer.gridSize(w, h);
+      if (g.cols >= cols && g.rows >= rows) break;
+      px = Math.max(4, px - 0.5);
+      this._setFont(px);
+    }
   }
 
   focus() { this.textarea.focus({ preventScroll: true }); }
@@ -139,6 +182,7 @@ export class Terminal {
     if (o.fontFamily || o.fontSize) {
       if (o.fontFamily) this.opts.fontFamily = o.fontFamily;
       if (o.fontSize) this.opts.fontSize = o.fontSize;
+      this._font = this.opts.fontSize;
       this.renderer.setFont(this.opts.fontFamily, this.opts.fontSize);
       this.fit();
     }

@@ -189,6 +189,7 @@ function renderTabs() {
     const where = s.remote ? `on ${s.remote.host} via ssh ${s.remote.route.map((h) => h.join(' ')).join(' → ')}` : `pid ${s.pid}`;
     t.title = `${s.name}\nid ${s.id}\n${where}\nstarted ${new Date(s.created).toLocaleString()}\ndouble-click to rename`;
     const name = document.createElement('span');
+    name.className = 'name';
     name.textContent = tabLabel(s);
     t.append(name);
     const st = document.createElement('span');
@@ -211,6 +212,9 @@ function renderTabs() {
     t.ondblclick = () => renameSession(s);
     bar.append(t);
   }
+  // keep the active tab in sight (the tab strip scrolls sideways on phones)
+  const act = bar.querySelector('.tab.active');
+  if (act && act.scrollIntoView) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   // sessions killed elsewhere
   for (const [id, o] of [...app.open]) {
     if (!o.adopting && !app.sessions.some((s) => s.id === id)) closeView(id, false);
@@ -254,7 +258,7 @@ function newLayer(o, label) {
   el.className = 'term';
   o.box.append(el);
   const term = new Terminal(el, {
-    fontSize: Number(store.get('wash.fontSize')) || 15, scrollback: 5000, theme,
+    fontSize: fontSize(), scrollback: 5000, theme,
     copyOnSelect: true, ctrlCopyPaste: true,
   });
   term.onTitle = (t) => { if (app.active === o.id && top(o).term === term) document.title = t ? `${t} — wash` : `${label} — wash`; };
@@ -486,8 +490,16 @@ async function renameSession(s) {
   try { await app.mgr.request({ t: 'rename', id: s.id, name }); } catch (e) { alert(e.message); }
 }
 
+// fontSize: this device's choice (A−/A+), else smaller on phone-sized screens.
+function fontSize() {
+  const chosen = Number(store.get('wash.fontSize'));
+  if (chosen) return chosen;
+  const w = Math.min(window.innerWidth || 1e4, (window.screen && window.screen.width) || 1e4);
+  return w < 480 ? 10 : w < 800 ? 12 : 15;
+}
+
 function zoom(d) {
-  const cur = Number(store.get('wash.fontSize')) || 15;
+  const cur = fontSize();
   const n = Math.max(8, Math.min(32, cur + d));
   store.set('wash.fontSize', String(n));
   for (const o of app.open.values()) for (const l of o.layers) l.term.setOptions({ fontSize: n });

@@ -271,8 +271,11 @@ purging pending keys after the TTL.
   device that had it keeps watching. Clicking the tab itself only switches. Control
   is per session, so the desktop can type in one tab while the phone types
   in another. If the controlling device goes away for 10 s, the device that
-  has watched longest gets control. Watchers see the output laid out for
-  the controller's terminal size.
+  has watched longest gets control. The controller sets the terminal size:
+  watchers draw the controller's grid, with the font shrunk to fit their
+  screen (never larger than their own font setting).
+* Phones get a smaller default font (A−/A+ still choose per device), and
+  the tabs get their own row that scrolls sideways.
   A session whose daemon predates this falls back to one peer: opening it
   elsewhere takes it over, and the devices trade it back and forth.
 * The wosh protocol types in `internal/wosh` mirror wosh's internal

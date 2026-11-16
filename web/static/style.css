@@ -11,6 +11,17 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
 .card { max-width: 420px; margin: 12vh auto 0; padding: 28px 28px 20px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 10px; }
 @media (max-width: 480px) { .card { margin: 16px; } }
+/* phones: the tabs get their own full-width row that scrolls sideways, and
+   compact tabs with bigger touch targets */
+@media (max-width: 700px) {
+  header { flex-wrap: wrap; row-gap: 4px; }
+  #tabs { order: 2; flex: 1 0 100%; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
+  #who { display: none; }
+  .tab { padding: 2px 0 2px 8px; gap: 0; flex: none; }
+  .tab .name { max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
+  .tab .st { display: none; }
+  .tab .ctl, .tab .x { padding: 6px 8px; font-size: 16px; }
+}
 h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: .5px; }
 .sub { margin: 0 0 18px; color: var(--dim); font-size: 13px; }
 form { display: grid; gap: 12px; margin-top: 14px; }

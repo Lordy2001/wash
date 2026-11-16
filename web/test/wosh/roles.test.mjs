@@ -10,7 +10,9 @@ const output = (off, s) => { const d = enc.encode(s); const b = new Uint8Array(9
 
 function session() {
   const sent = [];
-  const term = { cols: 80, rows: 24, written: '', write(s) { this.written += typeof s === 'string' ? s : new TextDecoder().decode(s); } };
+  const term = { cols: 80, rows: 24, written: '', fixed: undefined,
+    write(s) { this.written += typeof s === 'string' ? s : new TextDecoder().decode(s); },
+    setFixedSize(sz) { this.fixed = sz; } };
   const ws = new WoshSession({ cid: 'tab1', hello: {} }, 'S', term);
   ws.open = async () => ({ kind: 'webrtc', send: (b) => sent.push(b), close() {} });
   return { ws, sent, term };
@@ -56,5 +58,21 @@ test('an old daemon never sends roles: always in control', async () => {
   ws.frame(u64(F.ACK, 0));
   ws.input(enc.encode('z'));
   assert.deepEqual(inputs(sent), [[0, 'z']]);
+  ws.close();
+});
+
+test('watching draws the controller\'s grid; control fits this screen', async () => {
+  const { ws, term } = session();
+  await ws.connect();
+  ws.stopPing();
+  ws.frame(control({ op: 'role', role: 'view' }));
+  ws.frame(control({ op: 'size', cols: 132, rows: 40 }));
+  assert.deepEqual(term.fixed, { cols: 132, rows: 40 });
+  ws.frame(control({ op: 'size', cols: 45, rows: 30 })); // the controller rotated its phone
+  assert.deepEqual(term.fixed, { cols: 45, rows: 30 });
+  ws.frame(control({ op: 'role', role: 'control' }));
+  assert.equal(term.fixed, null);
+  ws.frame(control({ op: 'size', cols: 80, rows: 24 })); // our own size echoed back: stays fitted
+  assert.equal(term.fixed, null);
   ws.close();
 });

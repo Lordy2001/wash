@@ -493,6 +493,7 @@ func TestEndToEnd(t *testing.T) {
 		out  bytes.Buffer
 		role string
 		ack  uint64
+		size [2]uint16
 	}
 	// pump reads v until done() or a read error (returned)
 	pump := func(v *view, done func() bool) error {
@@ -510,9 +511,17 @@ func TestEndToEnd(t *testing.T) {
 			case wosh.FAck:
 				v.ack = binary.BigEndian.Uint64(b[1:9])
 			case wosh.FControl:
-				var c struct{ Op, Role string }
-				if json.Unmarshal(b[1:], &c) == nil && c.Op == "role" {
-					v.role = c.Role
+				var c struct {
+					Op, Role   string
+					Cols, Rows uint16
+				}
+				if json.Unmarshal(b[1:], &c) == nil {
+					switch c.Op {
+					case "role":
+						v.role = c.Role
+					case "size":
+						v.size = [2]uint16{c.Cols, c.Rows}
+					}
 				}
 			}
 		}
@@ -549,9 +558,16 @@ func TestEndToEnd(t *testing.T) {
 	if err := pump(B, func() bool { return B.role != "" }); err != nil || B.role != "view" {
 		t.Fatalf("tabB joined as %q (%v), want view", B.role, err)
 	}
-	_ = A.c.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, A.ack, []byte("echo shared-$((5*5))\r")))
+	// the controller's terminal size reaches the watcher (it draws that grid)
+	rz := []byte{wosh.FResize, 0, 90, 0, 33}
+	_ = A.c.Write(ctx, websocket.MessageBinary, rz)
+	if err := pump(B, func() bool { return B.size == [2]uint16{90, 33} }); err != nil {
+		t.Fatalf("watcher size: %v (%v)", err, B.size)
+	}
+	_ = B.c.Write(ctx, websocket.MessageBinary, []byte{wosh.FResize, 0, 20, 0, 10}) // a watcher cannot resize
+	_ = A.c.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, A.ack, []byte("echo shared-$((5*5)) $(stty size)\r")))
 	for _, v := range []*view{A, B} {
-		if err := pump(v, func() bool { return strings.Contains(v.out.String(), "shared-25") }); err != nil {
+		if err := pump(v, func() bool { return strings.Contains(v.out.String(), "shared-25 33 90") }); err != nil {
 			t.Fatalf("output: %v (%q)", err, v.out.String())
 		}
 	}
