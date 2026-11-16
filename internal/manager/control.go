@@ -154,6 +154,15 @@ func (m *Manager) control(req Request) (any, error) {
 		return m.Approve(ctx, req.ID)
 	case "keys.revoke":
 		return nil, m.Revoke(ctx, req.ID)
+	case "keys.open":
+		d := time.Duration(0)
+		if req.Val != "" {
+			var err error
+			if d, err = time.ParseDuration(req.Val); err != nil || d <= 0 {
+				return nil, fmt.Errorf("bad duration %q (e.g. 30m, 1h)", req.Val)
+			}
+		}
+		return m.OpenRegistration(ctx, d)
 	case "agent":
 		return nil, m.SetAgent(req.Val)
 	case "config.reload":

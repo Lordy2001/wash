@@ -21,8 +21,13 @@
 //	WASH_TLS           "auto" (self-signed in $WASH_DATA/tls, default), "off"
 //	                   (plain HTTP behind a TLS proxy), or "CERT,KEY" file paths
 //	WASH_TLS_HOSTS     extra names/IPs for the self-signed certificate
-//	WASH_REGISTRATION  "open" (default) or "closed"
-//	WASH_TRUST_PROXY   1: take client IPs from X-Forwarded-For
+//	WASH_REGISTRATION  "closed" (default: each user opens passkey creation for up to
+//	                   1h with `wash keys open`) or "open" (anyone, any time)
+//	WASH_DENY_USERS    extra user names (comma separated) that may never use wash, on top
+//	                   of the built-in list (root, ubuntu, pi, system and service names)
+//	WASH_TRUST_PROXY   behind a reverse proxy: comma-separated proxy IPs/CIDRs whose
+//	                   X-Forwarded-For/-Proto are believed, or 1 for any peer (then
+//	                   publish the port on 127.0.0.1 only). Default: off
 package main
 
 import (
@@ -33,6 +38,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -43,6 +49,7 @@ import (
 
 	webui "wash/web"
 
+	"wash/internal/userpolicy"
 	"wash/internal/web"
 )
 
@@ -83,6 +90,9 @@ func main() {
 		}
 		if len(args) != 1 {
 			fatal("usage: wash-web enroll [-q] USER")
+		}
+		if userpolicy.Denied(args[0], denyUsers()) {
+			fatal("%s: %v", args[0], userpolicy.ErrDenied)
 		}
 		code, err := db.NewEnrollCode(args[0])
 		if err != nil {
@@ -238,6 +248,10 @@ func serve(data string) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	trust, proxies, err := trustedProxies(os.Getenv("WASH_TRUST_PROXY"))
+	if err != nil {
+		log.Fatal(err)
+	}
 	caFile := ""
 	if env("WASH_TLS", "auto") == "auto" {
 		caFile = web.CAFile(filepath.Join(data, "tls"))
@@ -245,10 +259,12 @@ func serve(data string) {
 	srv := web.New(web.Config{
 		Listen:       env("WASH_LISTEN", "0.0.0.0:8443"),
 		Origins:      origins,
-		Registration: env("WASH_REGISTRATION", "open") != "closed",
+		Registration: registrationMode(),
 		Static:       webui.Static(),
 		Version:      version,
-		TrustProxy:   os.Getenv("WASH_TRUST_PROXY") == "1",
+		TrustProxy:   trust,
+		Proxies:      proxies,
+		DenyUsers:    denyUsers(),
 		CAFile:       caFile,
 	}, db)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -282,3 +298,44 @@ func serve(data string) {
 		log.Fatal(err)
 	}
 }
+
+func registrationMode() bool {
+	switch v := env("WASH_REGISTRATION", "closed"); v {
+	case "open":
+		return true
+	case "closed":
+		return false
+	default:
+		log.Fatalf("WASH_REGISTRATION=%q: want open or closed", v)
+		return false
+	}
+}
+
+// trustedProxies parses WASH_TRUST_PROXY: "", "0" (off), "1" (any peer), or
+// a comma-separated list of IPs and CIDRs.
+func trustedProxies(v string) (bool, []netip.Prefix, error) {
+	switch strings.TrimSpace(v) {
+	case "", "0":
+		return false, nil, nil
+	case "1":
+		return true, nil, nil
+	}
+	var out []netip.Prefix
+	for _, f := range strings.Split(v, ",") {
+		if f = strings.TrimSpace(f); f == "" {
+			continue
+		}
+		if p, err := netip.ParsePrefix(f); err == nil {
+			out = append(out, p.Masked())
+			continue
+		}
+		a, err := netip.ParseAddr(f)
+		if err != nil {
+			return false, nil, fmt.Errorf("WASH_TRUST_PROXY: %q is not an IP or CIDR", f)
+		}
+		out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
+	}
+	return true, out, nil
+}
+
+func denyUsers() map[string]bool { return userpolicy.ParseList(os.Getenv("WASH_DENY_USERS")) }

@@ -18,6 +18,7 @@ import (
 
 	"wash/internal/link"
 	"wash/internal/passkey"
+	"wash/internal/userpolicy"
 )
 
 // PendingTTL: a passkey created on the website is purged unless its user
@@ -55,6 +56,10 @@ CREATE TABLE IF NOT EXISTS managers (
 	token_hash BLOB NOT NULL UNIQUE,
 	created    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS meta (
+	k TEXT PRIMARY KEY,
+	v BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS enroll_codes (
 	code_hash BLOB PRIMARY KEY,
 	user      TEXT NOT NULL,
@@ -86,6 +91,23 @@ func randToken(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+// Secret returns the server's random 32-byte secret, creating it once.
+func (d *DB) Secret() ([]byte, error) {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	if _, err := d.db.Exec(`INSERT OR IGNORE INTO meta(k, v) VALUES('secret', ?)`, b); err != nil {
+		return nil, err
+	}
+	var v []byte
+	if err := d.db.QueryRow(`SELECT v FROM meta WHERE k='secret'`).Scan(&v); err != nil {
+		return nil, err
+	}
+	if len(v) != 32 {
+		return nil, errors.New("bad secret in meta table")
+	}
+	return v, nil
 }
 
 // UserHandle returns the WebAuthn user handle for name, creating it.
@@ -272,7 +294,8 @@ func (d *DB) NewEnrollCode(user string) (string, error) {
 
 // Enroll redeems a code; returns the user and the manager's long-lived token
 // (replacing any previous manager token of that user).
-func (d *DB) Enroll(code string) (user, token string, err error) {
+// refuse (may be nil) vetoes the code's user; the code is used up either way.
+func (d *DB) Enroll(code string, refuse func(user string) bool) (user, token string, err error) {
 	tx, err := d.db.Begin()
 	if err != nil {
 		return "", "", err
@@ -285,6 +308,12 @@ func (d *DB) Enroll(code string) (user, token string, err error) {
 	}
 	if _, err := tx.Exec(`DELETE FROM enroll_codes WHERE code_hash=? OR expires < ?`, hash(code), time.Now().Unix()); err != nil {
 		return "", "", err
+	}
+	if refuse != nil && refuse(user) {
+		if err := tx.Commit(); err != nil {
+			return "", "", err
+		}
+		return "", "", userpolicy.ErrDenied
 	}
 	token = randToken(32)
 	if _, err := tx.Exec(`INSERT INTO managers(user, token_hash, created) VALUES(?,?,?)

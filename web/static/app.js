@@ -90,7 +90,7 @@ async function signIn(ev) {
     setMsg(msg, 'Connecting…');
     await startApp(fin.ticket);
   } catch (e) {
-    setMsg(msg, e.name === 'NotAllowedError' ? 'Passkey request was cancelled or timed out.'
+    setMsg(msg, e.name === 'NotAllowedError' ? 'Passkey request was cancelled or timed out. No passkey for this user here? Create one, then approve it with `wash keys approve ID` on the host.'
       : e.name === 'SecurityError' ? 'The browser blocked passkeys here (untrusted certificate?). Install the wash CA below, then reload.' : e.message, 'err');
   } finally {
     $('#login-btn').disabled = false;
@@ -487,6 +487,7 @@ async function boot() {
     return;
   }
   if (!config.registration) $('#to-reg').hidden = true;
+  if (config.registration === 'request') $('#reg-open-hint').hidden = false;
   show('login');
   // every page load signs in with a passkey: the shell manager verifies it too
   if ($('#login-user').value) $('#login-btn').focus(); else $('#login-user').focus();

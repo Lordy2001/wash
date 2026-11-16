@@ -5,7 +5,9 @@ package web
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -15,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"regexp"
 	"strings"
@@ -27,18 +30,24 @@ import (
 
 	"wash/internal/link"
 	"wash/internal/passkey"
+	"wash/internal/userpolicy"
 )
 
 // Config configures the server.
 type Config struct {
 	Listen       string   // 0.0.0.0:8443
 	Origins      []string // allowed browser origins; empty = derive from Host
-	Registration bool     // allow creating passkeys from the website
+	Registration bool     // always allow creating passkeys (else only in windows opened by `wash keys open`)
 	Static       fs.FS
 	Version      string
-	TrustProxy   bool   // take client IPs from X-Forwarded-For
-	CAFile       string // wash-web's own CA, served at /ca.crt for users to trust
+	TrustProxy   bool            // take client IP and scheme from X-Forwarded-For/-Proto
+	Proxies      []netip.Prefix  // ... but only from these peers (empty: from any peer)
+	CAFile       string          // wash-web's own CA, served at /ca.crt for users to trust
+	DenyUsers    map[string]bool // refused on top of userpolicy.Reserved (WASH_DENY_USERS)
 }
+
+// MaxRegWindow is the longest `wash keys open` window.
+const MaxRegWindow = time.Hour
 
 // Server is the web front end.
 type Server struct {
@@ -51,6 +60,8 @@ type Server struct {
 	links      map[string]*link.Peer // user -> manager link
 	waiters    map[string]*waiter    // sid -> pending dial-back
 	limits     map[string]*bucket
+	regOpen    map[string]time.Time // user -> passkey creation allowed until
+	secret     []byte               // keys decoy login challenges
 }
 
 type ceremony struct {
@@ -62,6 +73,7 @@ type ceremony struct {
 	session  webauthn.SessionData
 	expires  time.Time
 	attempts int
+	decoy    bool // login for a user without approved passkeys: always fails
 }
 
 type webSession struct {
@@ -89,8 +101,15 @@ var userRE = regexp.MustCompile(`^[a-z_][a-z0-9_.-]{0,31}$`)
 
 // New returns a server.
 func New(cfg Config, db *DB) *Server {
+	secret, err := db.Secret()
+	if err != nil {
+		log.Printf("server secret: %v (using a random one until restart)", err)
+		secret = make([]byte, 32)
+		_, _ = rand.Read(secret)
+	}
 	return &Server{
-		cfg: cfg, db: db,
+		cfg: cfg, db: db, secret: secret,
+		regOpen:    map[string]time.Time{},
 		ceremonies: map[string]*ceremony{},
 		sessions:   map[string]*webSession{},
 		links:      map[string]*link.Peer{},
@@ -107,8 +126,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ca.crt", s.handleCA)
 	mux.HandleFunc("POST /api/register/begin", s.limited(s.handleRegisterBegin))
 	mux.HandleFunc("POST /api/register/finish", s.limited(s.handleRegisterFinish))
-	mux.HandleFunc("POST /api/login/begin", s.limited(s.handleLoginBegin))
-	mux.HandleFunc("POST /api/login/finish", s.limited(s.handleLoginFinish))
+	mux.HandleFunc("POST /api/login/begin", s.limited(floor(loginFloor, s.handleLoginBegin)))
+	mux.HandleFunc("POST /api/login/finish", s.limited(floor(loginFloor, s.handleLoginFinish)))
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/ws", s.handleBrowserWS)
 	mux.HandleFunc("POST /api/enroll", s.limited(s.handleEnroll))
@@ -145,6 +164,11 @@ func (s *Server) Janitor(ctx context.Context) {
 		for k, b := range s.limits {
 			if now.Sub(b.last) > 10*time.Minute {
 				delete(s.limits, k)
+			}
+		}
+		for k, until := range s.regOpen {
+			if now.After(until) {
+				delete(s.regOpen, k)
 			}
 		}
 		s.mu.Unlock()
@@ -192,17 +216,57 @@ func newID() string {
 	return fmt.Sprintf("%x", b)
 }
 
-func (s *Server) clientIP(r *http.Request) string {
-	if s.cfg.TrustProxy {
-		if f := r.Header.Get("X-Forwarded-For"); f != "" {
-			return strings.TrimSpace(strings.Split(f, ",")[0])
-		}
-	}
+func peerIP(r *http.Request) string {
 	h, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr
 	}
 	return h
+}
+
+// trustedProxy reports whether ip is one of the configured proxies.
+func (s *Server) trustedProxy(ip string) bool {
+	a, err := netip.ParseAddr(ip)
+	if err != nil {
+		return false
+	}
+	a = a.Unmap()
+	for _, p := range s.cfg.Proxies {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// viaProxy reports whether the request's X-Forwarded-* headers can be believed.
+func (s *Server) viaProxy(r *http.Request) bool {
+	return s.cfg.TrustProxy && (len(s.cfg.Proxies) == 0 || s.trustedProxy(peerIP(r)))
+}
+
+// clientIP is the address rate limits and logs use. Behind a trusted proxy it
+// is the right-most X-Forwarded-For entry that is not itself a trusted proxy:
+// entries to the left of that were written by the client and can be anything.
+func (s *Server) clientIP(r *http.Request) string {
+	peer := peerIP(r)
+	if !s.viaProxy(r) {
+		return peer
+	}
+	var hops []string
+	for _, v := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(v, ",")...)
+	}
+	for i := len(hops) - 1; i >= 0; i-- {
+		h := strings.TrimSpace(hops[i])
+		if h == "" {
+			continue
+		}
+		if len(s.cfg.Proxies) > 0 && s.trustedProxy(h) {
+			continue
+		}
+		return h
+	}
+	return peer
 }
 
 // rp returns the WebAuthn instance for this request's origin.
@@ -227,7 +291,7 @@ func (s *Server) rp(r *http.Request) (*webauthn.WebAuthn, string, error) {
 		}
 	} else {
 		scheme := "https"
-		if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+		if r.TLS == nil && !(s.viaProxy(r) && r.Header.Get("X-Forwarded-Proto") == "https") {
 			scheme = "http"
 		}
 		want := scheme + "://" + r.Host
@@ -246,6 +310,55 @@ func (s *Server) rp(r *http.Request) (*webauthn.WebAuthn, string, error) {
 	wa, err := passkey.New(rpID, []string{origin})
 	return wa, origin, err
 }
+
+// ResetRateLimitsForTest forgets all rate limit buckets.
+func (s *Server) ResetRateLimitsForTest() {
+	s.mu.Lock()
+	s.limits = map[string]*bucket{}
+	s.mu.Unlock()
+}
+
+// loginFloor is the least time a sign-in request takes, whatever happened.
+// Real users cost a database lookup and a round trip to their washd; decoys
+// cost nothing. Padding both to the same time hides which one ran (random
+// jitter would not: it averages out over many requests).
+const loginFloor = 100 * time.Millisecond
+
+func floor(d time.Duration, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		deadline := time.Now().Add(d)
+		h(&delayed{ResponseWriter: w, until: deadline, ctx: r.Context()}, r)
+	}
+}
+
+// delayed holds the response back until its deadline, so the time to the
+// first byte does not depend on the code path.
+type delayed struct {
+	http.ResponseWriter
+	until time.Time
+	ctx   context.Context
+	slept bool
+}
+
+func (d *delayed) wait() {
+	if d.slept {
+		return
+	}
+	d.slept = true
+	t := time.NewTimer(time.Until(d.until))
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-d.ctx.Done():
+	}
+}
+
+func (d *delayed) WriteHeader(code int) { d.wait(); d.ResponseWriter.WriteHeader(code) }
+
+func (d *delayed) Write(b []byte) (int, error) { d.wait(); return d.ResponseWriter.Write(b) }
+
+// denied reports whether user may never use wash (root, defaults, service accounts).
+func (s *Server) denied(user string) bool { return userpolicy.Denied(user, s.cfg.DenyUsers) }
 
 type bucket struct {
 	tokens float64
@@ -333,7 +446,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"origins":      s.cfg.Origins,
 		"ca":           s.cfg.CAFile != "",
-		"registration": s.cfg.Registration,
+		"registration": map[bool]string{true: "open", false: "request"}[s.cfg.Registration],
 		"pending_ttl":  PendingTTL.String(),
 		"user":         user,
 		"logged_in":    ok,
@@ -341,11 +454,32 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.Registration {
-		fail(w, 403, "passkey registration is disabled on this server")
-		return
+// OpenRegistration lets user create passkeys on the website for d (at most
+// MaxRegWindow); d <= 0 closes the window. It returns when the window closes.
+func (s *Server) OpenRegistration(user string, d time.Duration) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d <= 0 {
+		delete(s.regOpen, user)
+		return time.Time{}
 	}
+	until := time.Now().Add(min(d, MaxRegWindow))
+	s.regOpen[user] = until
+	return until
+}
+
+func (s *Server) registrationOpen(user string) bool {
+	if s.cfg.Registration {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return time.Now().Before(s.regOpen[user])
+}
+
+const regClosed = "passkey creation is closed. Run `wash keys open` as that user on the host, then try again"
+
+func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	var in struct{ User, Name string }
 	if err := readJSON(r, &in); err != nil {
 		fail(w, 400, "bad request")
@@ -355,6 +489,14 @@ func (s *Server) handleRegisterBegin(w http.ResponseWriter, r *http.Request) {
 	in.Name = strings.TrimSpace(in.Name)
 	if !userRE.MatchString(in.User) {
 		fail(w, 400, "user must be a unix user name")
+		return
+	}
+	if s.denied(in.User) {
+		fail(w, 403, userpolicy.ErrDenied.Error())
+		return
+	}
+	if !s.registrationOpen(in.User) {
+		fail(w, 403, regClosed)
 		return
 	}
 	if in.Name == "" {
@@ -404,6 +546,10 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "registration expired; try again")
 		return
 	}
+	if !s.registrationOpen(c.user) {
+		fail(w, 403, regClosed)
+		return
+	}
 	wa, origin, err := s.rp(r)
 	if err != nil || origin != c.origin {
 		fail(w, 400, "origin changed during registration")
@@ -433,6 +579,21 @@ func (s *Server) handleRegisterFinish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"id": short, "user": c.user, "expires_in": PendingTTL.String()})
 }
 
+// decoy returns a stable fake credential and user handle for user on rpID.
+// Login for a user without approved passkeys gets a challenge for it, so the
+// answer to /api/login/begin does not tell whether a user exists, has
+// passkeys, or runs a shell manager.
+func (s *Server) decoy(rpID, user string) (webauthn.Credential, []byte) {
+	mac := func(kind string) []byte {
+		m := hmac.New(sha256.New, s.secret)
+		m.Write([]byte(kind + "\x00" + rpID + "\x00" + user))
+		return m.Sum(nil)
+	}
+	return webauthn.Credential{ID: mac("cred")}, mac("handle")
+}
+
+const loginFailed = "sign-in failed. New here? Create a passkey, then approve it on the host with `wash keys approve ID`"
+
 func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 	var in struct{ User string }
 	if err := readJSON(r, &in); err != nil || !userRE.MatchString(strings.TrimSpace(in.User)) {
@@ -445,18 +606,14 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err.Error())
 		return
 	}
-	lk := s.linkFor(user)
-	if lk == nil {
-		fail(w, 503, fmt.Sprintf("no shell manager is running for %s (run `wash up` on the host)", user))
-		return
+	var creds []credRow
+	if !s.denied(user) { // refused users only ever get the decoy
+		if creds, err = s.db.Approved(user); err != nil {
+			fail(w, 500, "database error")
+			return
+		}
 	}
-	creds, err := s.db.Approved(user)
-	if err != nil {
-		fail(w, 500, "database error")
-		return
-	}
-	handle, _ := s.db.UserHandle(user)
-	lu := &passkey.User{Handle: handle, Name: user}
+	lu := &passkey.User{Name: user}
 	var allow []protocol.CredentialDescriptor
 	for _, c := range creds {
 		if c.rpID == wa.Config.RPID {
@@ -464,21 +621,31 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 			lu.Creds = append(lu.Creds, c.cred)
 		}
 	}
-	if len(allow) == 0 {
-		fail(w, 403, "no approved passkey for "+user+" on this site (create one, then run `wash keys approve ID` on the host)")
-		return
-	}
-	// manager's half of the challenge
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	var mn link.Nonce
-	if err := lk.Call(ctx, link.OpChallenge, nil, &mn); err != nil || len(mn.Nonce) != passkey.NonceLen {
-		fail(w, 502, "shell manager did not answer")
-		return
-	}
+	// webNonce ‖ managerNonce. Without a manager (or for a decoy) the second
+	// half stays random: the login then fails at /finish, after the passkey.
 	challenge := make([]byte, 2*passkey.NonceLen)
-	_, _ = rand.Read(challenge[:passkey.NonceLen])
-	copy(challenge[passkey.NonceLen:], mn.Nonce)
+	_, _ = rand.Read(challenge)
+	decoy := len(allow) == 0
+	if decoy {
+		cred, handle := s.decoy(wa.Config.RPID, user)
+		lu.Handle, lu.Creds = handle, []webauthn.Credential{cred}
+		allow = []protocol.CredentialDescriptor{cred.Descriptor()}
+	} else {
+		if lu.Handle, err = s.db.UserHandle(user); err != nil {
+			fail(w, 500, "database error")
+			return
+		}
+		if lk := s.linkFor(user); lk != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			var mn link.Nonce
+			if err := lk.Call(ctx, link.OpChallenge, nil, &mn); err == nil && len(mn.Nonce) == passkey.NonceLen {
+				copy(challenge[passkey.NonceLen:], mn.Nonce)
+			} else {
+				log.Printf("login %s: shell manager gave no challenge: %v", user, err)
+			}
+			cancel()
+		}
+	}
 	opts, sess, err := wa.BeginLogin(lu,
 		webauthn.WithChallenge(challenge),
 		webauthn.WithAllowedCredentials(allow),
@@ -490,7 +657,7 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 	id := newID()
 	s.mu.Lock()
 	s.ceremonies[id] = &ceremony{kind: "login", user: user, rpID: wa.Config.RPID, origin: origin,
-		session: *sess, expires: time.Now().Add(ceremonyTTL)}
+		session: *sess, expires: time.Now().Add(ceremonyTTL), decoy: decoy}
 	s.mu.Unlock()
 	writeJSON(w, 200, map[string]any{"id": id, "options": opts})
 }
@@ -538,17 +705,21 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "challenge mismatch")
 		return
 	}
+	if c.decoy || s.denied(c.user) {
+		fail(w, 403, loginFailed)
+		return
+	}
 	cred, err := passkey.Verify(wa, u, parsed, challenge)
 	if err != nil {
 		log.Printf("login %s from %s: web verification failed: %v", c.user, s.clientIP(r), err)
-		fail(w, 403, "passkey verification failed: "+err.Error())
+		fail(w, 403, loginFailed)
 		return
 	}
 	s.db.Used(cred)
 	// the manager verifies the same assertion against its own key store
 	lk := s.linkFor(c.user)
 	if lk == nil {
-		fail(w, 503, "shell manager went away")
+		fail(w, 503, fmt.Sprintf("no shell manager is running for %s (run `wash up` on the host)", c.user))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -635,7 +806,12 @@ func (s *Server) managerUser(r *http.Request) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return s.db.ManagerUser(tok)
+	user, ok := s.db.ManagerUser(tok)
+	if ok && s.denied(user) {
+		log.Printf("refused manager link for %s: %v", user, userpolicy.ErrDenied)
+		return "", false
+	}
+	return user, ok
 }
 
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
@@ -644,7 +820,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "bad request")
 		return
 	}
-	user, token, err := s.db.Enroll(strings.TrimSpace(in.Code))
+	user, token, err := s.db.Enroll(strings.TrimSpace(in.Code), s.denied)
 	if err != nil {
 		fail(w, 403, err.Error())
 		return
@@ -738,6 +914,18 @@ func (s *Server) managerHandler(user string) link.Handler {
 			}
 			log.Printf("passkey %s approved by %s", ref.ID, user)
 			return struct{}{}, nil
+		case link.OpKeysOpen:
+			var rw link.RegWindow
+			if err := json.Unmarshal(data, &rw); err != nil {
+				return nil, err
+			}
+			until := s.OpenRegistration(user, rw.For)
+			if until.IsZero() {
+				log.Printf("passkey creation closed by %s", user)
+			} else {
+				log.Printf("passkey creation opened by %s until %s", user, until.Format(time.RFC3339))
+			}
+			return link.RegWindow{Until: until, Always: s.cfg.Registration}, nil
 		case link.OpKeysRevoke:
 			if err := s.db.Revoke(user, ref.ID); err != nil {
 				return nil, err

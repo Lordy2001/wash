@@ -29,6 +29,7 @@ import (
 	"wash/internal/manager"
 	"wash/internal/paths"
 	"wash/internal/pin"
+	"wash/internal/userpolicy"
 )
 
 var version = "0.1.0-dev"
@@ -60,6 +61,9 @@ sessions:
 
 passkeys (only your own user's):
   wash keys                     approved and pending passkeys
+  wash keys open [DURATION]     allow creating a passkey for you on the website
+                                (default and maximum 1h; closed again otherwise)
+  wash keys close               stop allowing it before the time is up
   wash keys approve ID          approve a pending passkey (pending ones expire after 1h)
   wash keys revoke ID           remove a passkey (closes browsers that used it)
 
@@ -91,6 +95,18 @@ func main() {
 	case "agent":
 		err = agent(rest)
 	case "web":
+		if len(rest) >= 2 && rest[0] == "enroll" {
+			// an admin issuing a code for someone: check that account on this host
+			name := rest[len(rest)-1]
+			if a, lerr := userpolicy.Lookup(name); lerr == nil {
+				err = userpolicy.Check(a)
+			} else if userpolicy.Reserved(name) {
+				err = fmt.Errorf("%s: %w", name, userpolicy.ErrDenied)
+			}
+			if err != nil {
+				break
+			}
+		}
 		err = webExec(rest)
 	case "enroll":
 		err = enroll(rest)
@@ -180,7 +196,11 @@ func up() error {
 		fmt.Println("washd is already running")
 		return nil
 	}
-	if _, err := manager.LoadCreds(); err != nil {
+	creds, err := manager.LoadCreds()
+	if err != nil {
+		return err
+	}
+	if err := userpolicy.CheckLocal(creds.User); err != nil {
 		return err
 	}
 	bin, err := washdPath()
@@ -293,6 +313,9 @@ func logs(args []string) error {
 // --- enroll ---------------------------------------------------------------------
 
 func enroll(args []string) error {
+	if err := userpolicy.CheckLocal(""); err != nil {
+		return err
+	}
 	fp, args := flagVal(args, "--fingerprint")
 	yes := has(args, "--yes")
 	var pos []string
@@ -394,6 +417,9 @@ func enroll(args []string) error {
 	}
 	if me := os.Getenv("USER"); me != "" && me != out.User {
 		fmt.Printf("note: the code was issued for user %q, you are %q\n", out.User, me)
+	}
+	if err := userpolicy.CheckLocal(out.User); err != nil {
+		return err
 	}
 	creds.User, creds.Token = out.User, out.Token
 	if err := manager.SaveCreds(creds); err != nil {
@@ -558,7 +584,7 @@ func keys(args []string) error {
 			return err
 		}
 		if len(ks) == 0 {
-			fmt.Println("no passkeys. Create one on the website, then `wash keys approve ID`.")
+			fmt.Println("no passkeys. Run `wash keys open`, create one on the website, then `wash keys approve ID`.")
 			return nil
 		}
 		sort.SliceStable(ks, func(i, j int) bool { return ks[i].Approved && !ks[j].Approved })
@@ -593,7 +619,30 @@ func keys(args []string) error {
 			return err
 		}
 		fmt.Printf("approved %s (%s, created %s from %s)\n", k.ID, k.Name, ago(k.Created), k.Origin)
-	case "revoke", "rm", "delete":
+	case "open":
+		if len(args) > 1 {
+			return errors.New("usage: wash keys open [DURATION]")
+		}
+		d := "1h"
+		if len(args) == 1 {
+			d = args[0]
+		}
+		var rw link.RegWindow
+		if err := manager.Call(manager.Request{Op: "keys.open", Val: d}, &rw); err != nil {
+			return err
+		}
+		if rw.Always {
+			fmt.Println("note: this wash-web runs with WASH_REGISTRATION=open, so anyone can always create passkeys there")
+		}
+		fmt.Printf("passkey creation for you is open until %s (%s). Create the passkey on the website,\n",
+			rw.Until.Format("15:04"), time.Until(rw.Until).Round(time.Minute))
+		fmt.Println("then approve only the ID the website shows you: `wash keys approve ID`. Close early with `wash keys close`.")
+	case "close":
+		var rw link.RegWindow
+		if err := manager.Call(manager.Request{Op: "keys.open"}, &rw); err != nil {
+			return err
+		}
+		fmt.Println("passkey creation for you is closed")
 		if len(args) != 1 {
 			return errors.New("usage: wash keys revoke ID")
 		}

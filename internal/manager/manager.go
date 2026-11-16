@@ -27,6 +27,7 @@ import (
 	"wash/internal/link"
 	"wash/internal/passkey"
 	"wash/internal/pin"
+	"wash/internal/userpolicy"
 )
 
 // Version is washd's version (set by the build).
@@ -72,6 +73,9 @@ type Manager struct {
 func New() (*Manager, error) {
 	creds, err := LoadCreds()
 	if err != nil {
+		return nil, err
+	}
+	if err := userpolicy.CheckLocal(creds.User); err != nil {
 		return nil, err
 	}
 	m := &Manager{
@@ -448,6 +452,25 @@ func (m *Manager) Approve(ctx context.Context, id string) (link.KeyInfo, error) 
 	}
 	log.Printf("passkey %s (%s) approved", rec.ID, rec.Name)
 	return rec.KeyInfo, nil
+}
+
+// OpenRegistration lets this user create passkeys on the website for d (wash-web
+// caps it at one hour); d == 0 closes passkey creation again.
+func (m *Manager) OpenRegistration(ctx context.Context, d time.Duration) (link.RegWindow, error) {
+	p, err := m.web()
+	if err != nil {
+		return link.RegWindow{}, err
+	}
+	var out link.RegWindow
+	if err := p.Call(ctx, link.OpKeysOpen, link.RegWindow{For: d}, &out); err != nil {
+		return out, err
+	}
+	if d > 0 {
+		log.Printf("passkey creation on the website open until %s", out.Until.Format(time.Kitchen))
+	} else {
+		log.Printf("passkey creation on the website closed")
+	}
+	return out, nil
 }
 
 // Revoke removes a key locally (immediately effective for washd) and on

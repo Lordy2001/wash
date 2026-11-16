@@ -132,6 +132,11 @@ func (e *env) post(path string, body any) (int, map[string]any) {
 	return resp.StatusCode, out
 }
 
+func allowOf(opts map[string]any) []any {
+	l, _ := opts["options"].(map[string]any)["publicKey"].(map[string]any)["allowCredentials"].([]any)
+	return l
+}
+
 func challengeOf(opts map[string]any) string {
 	return opts["options"].(map[string]any)["publicKey"].(map[string]any)["challenge"].(string)
 }
@@ -166,7 +171,7 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := web.New(web.Config{Registration: true, Static: webui.Static(), Version: "test"}, db)
+	srv := web.New(web.Config{Static: webui.Static(), Version: "test"}, db)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	base := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
@@ -189,9 +194,49 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// login before washd runs: clear error
-	if st, out := e.post("/api/login/begin", map[string]string{"user": "alice"}); st != 503 {
-		t.Fatalf("login without manager: %d %v", st, out)
+	// login/begin does not reveal users, passkeys or managers: a user without
+	// approved passkeys gets a stable decoy, shaped like a real challenge
+	decoys := map[string]any{}
+	for _, u := range []string{"alice", "nosuchuser", "alice"} {
+		st, out := e.post("/api/login/begin", map[string]string{"user": u})
+		if st != 200 || len(allowOf(out)) != 1 {
+			t.Fatalf("login begin %s: %d %v", u, st, out)
+		}
+		id := allowOf(out)[0].(map[string]any)["id"]
+		if prev, ok := decoys[u]; ok && prev != id {
+			t.Fatalf("decoy for %s changed: %v -> %v", u, prev, id)
+		}
+		decoys[u] = id
+	}
+	if decoys["alice"] == decoys["nosuchuser"] {
+		t.Fatal("decoys are not per user")
+	}
+	// every sign-in request takes at least the floor, so timing tells nothing
+	t0 := time.Now()
+	if st, out := e.post("/api/login/begin", map[string]string{"user": "root"}); st != 200 || len(allowOf(out)) != 1 {
+		t.Fatalf("login begin root: %d %v", st, out)
+	}
+	if d := time.Since(t0); d < 100*time.Millisecond {
+		t.Fatalf("login begin answered in %s, under the 100ms floor", d)
+	}
+	t0 = time.Now()
+	if st, _ := e.post("/api/login/finish?id=nope", map[string]string{}); st != 400 || time.Since(t0) < 100*time.Millisecond {
+		t.Fatalf("login finish: %d in %s", st, time.Since(t0))
+	}
+
+	// root, default and service accounts never get in
+	rootCode, _ := db.NewEnrollCode("root")
+	if st, out := e.post("/api/enroll", map[string]string{"code": rootCode}); st != 403 {
+		t.Fatalf("enroll root: %d %v", st, out)
+	}
+	srv.OpenRegistration("ubuntu", time.Minute)
+	if st, out := e.post("/api/register/begin", map[string]string{"user": "ubuntu"}); st != 403 ||
+		!strings.Contains(fmt.Sprint(out["error"]), "cannot use wash") {
+		t.Fatalf("register ubuntu: %d %v", st, out)
+	}
+	srv.ResetRateLimitsForTest()
+	if n, _ := e.db.Keys("nosuchuser"); len(n) != 0 {
+		t.Fatal("login begin stored something for an unknown user")
 	}
 
 	m, err := manager.New()
@@ -213,6 +258,18 @@ func TestEndToEnd(t *testing.T) {
 	})
 
 	// --- register a passkey (pending) -----------------------------------------------
+	// passkey creation is closed until the user opens it from the host
+	if st, out := e.post("/api/register/begin", map[string]string{"user": "alice", "name": "x"}); st != 403 ||
+		!strings.Contains(fmt.Sprint(out["error"]), "wash keys open") {
+		t.Fatalf("register while closed: %d %v", st, out)
+	}
+	var rw link.RegWindow
+	if err := manager.Call(manager.Request{Op: "keys.open", Val: "5h"}, &rw); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Until(rw.Until); d < 59*time.Minute || d > time.Hour {
+		t.Fatalf("registration window %s, want capped at 1h", d)
+	}
 	auth := newAuthenticator()
 	register := func(a *authenticator, user string) string {
 		st, begin := e.post("/api/register/begin", map[string]string{"user": user, "name": "test key"})
@@ -250,6 +307,10 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// another user's key cannot be approved by alice's washd
+	if st, _ := e.post("/api/register/begin", map[string]string{"user": "bob"}); st != 403 {
+		t.Fatal("alice's window opened registration for bob")
+	}
+	srv.OpenRegistration("bob", time.Minute)
 	bobKey := register(newAuthenticator(), "bob")
 	if err := manager.Call(manager.Request{Op: "keys.approve", ID: bobKey}, nil); err == nil {
 		t.Fatal("alice approved bob's key")
@@ -442,10 +503,20 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// --- pending keys are purged after the TTL ----------------------------------------------
+	srv.ResetRateLimitsForTest() // the test is one client making many sign-in requests
 	pend := register(newAuthenticator(), "alice")
 	db.ExpirePendingForTest()
 	if _, err := db.Key("alice", pend); err == nil {
 		t.Fatal("expired pending key still present")
+	}
+
+	// --- wash keys close ----------------------------------------------------------------------
+	var closed link.RegWindow
+	if err := manager.Call(manager.Request{Op: "keys.open"}, &closed); err != nil || !closed.Until.IsZero() {
+		t.Fatalf("keys close: %v %+v", err, closed)
+	}
+	if st, _ := e.post("/api/register/begin", map[string]string{"user": "alice"}); st != 403 {
+		t.Fatal("registration still open after close")
 	}
 }
 

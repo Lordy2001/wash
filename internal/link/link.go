@@ -39,6 +39,7 @@ const (
 	OpKeysGet     = "keys.get"     // KeyRef -> KeyRecord
 	OpKeysApprove = "keys.approve" // KeyRef -> {}
 	OpKeysRevoke  = "keys.revoke"  // KeyRef -> {}
+	OpKeysOpen    = "keys.open"    // RegWindow -> RegWindow (allow passkey creation for a while)
 	OpInfo        = "info"         // -> Info
 )
 
@@ -84,6 +85,14 @@ type KeyRecord struct {
 	UserHandle []byte          `json:"user_handle"`
 	RPID       string          `json:"rp_id"`
 	Credential json.RawMessage `json:"credential"` // webauthn.Credential JSON
+}
+
+// RegWindow opens (For > 0) or closes (For == 0) passkey creation on the
+// website for the manager's user. The reply carries the resulting window.
+type RegWindow struct {
+	For    time.Duration `json:"for,omitempty"`
+	Until  time.Time     `json:"until,omitzero"`   // reply: when it closes (zero: closed)
+	Always bool          `json:"always,omitempty"` // reply: the site runs with WASH_REGISTRATION=open
 }
 
 type Info struct {

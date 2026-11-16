@@ -30,6 +30,7 @@ deploy/
 deploy/dev.sh install          # render units + ~/.local/share/wash-dev/.env, daemon-reload
 deploy/dev.sh start            # builds localhost/wash-web:dev, waits for (healthy)
 wash enroll                    # code + cert pin straight from the container, starts washd
+wash keys open                 # passkey creation is closed until you open it (1h)
 # browser: https://ca-data:8443 -> Create passkey -> `wash keys approve ID` -> Sign in
 deploy/dev.sh backup           # run the backup script against the dev paths
 wash web keys                  # wash-web admin commands inside the container
@@ -157,8 +158,10 @@ Notes:
 - `HealthCmd` uses the exec form. The `scratch` image has no shell, so the string form
   (`CMD-SHELL`) would never report healthy, and `Notify=healthy` would time out the
   unit (see `gotchas.md`).
-- Behind Caddy on the `ca` box, set `WASH_TLS=off`, `WASH_TRUST_PROXY=1` and
-  `WASH_ORIGIN=https://<public name>`. washd still needs a route to wash-web. Either
+- Behind Caddy on the `ca` box, set `WASH_TLS=off`, `WASH_TRUST_PROXY=<Caddy's IP as
+  wash-web sees it>` and `WASH_ORIGIN=https://<public name>` (its own host name, not a
+  subpath; see the main README). `WASH_TRUST_PROXY=1` (any peer) is safe only with
+  `PublishPort=127.0.0.1:8443:8443`. washd still needs a route to wash-web. Either
   enroll it against the Caddy URL, or keep `WASH_TLS=auto` and let Caddy proxy to
   `https://ca-data:8443` with `tls_insecure_skip_verify`.
 - Losing `/data-active/wash/tls` changes the certificate. Every washd then refuses the

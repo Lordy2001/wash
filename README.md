@@ -45,8 +45,14 @@ resume ticket that is kept only in page memory and is valid for 30 minutes.
 
 ## Passkey lifecycle
 
-* Anyone can create a passkey on the website for a user name. It is **pending**.
-* A pending passkey is **purged after 1 hour** unless that user approves it.
+* Passkey creation on the website is **closed** by default. `wash keys open`
+  opens it for your user only, for 1 hour (or less: `wash keys open 10m`).
+  `wash keys close` ends it early. A wash-web restart closes every window.
+  This stops strangers from filling your pending list with keys you might
+  approve by mistake. `WASH_REGISTRATION=open` restores the old behaviour:
+  anyone can create a passkey for any user name at any time.
+* A new passkey is **pending**. It is **purged after 1 hour** unless that
+  user approves it. Approve only the ID the website showed you.
   Limits: 5 pending per user, 200 in total, and a rate limit per IP.
 * `wash keys` lists your approved and pending passkeys. `wash keys approve ID`
   works only for the user washd runs as (washd's link is bound to that user,
@@ -75,7 +81,45 @@ on pages with certificate errors. `WASH_TLS=auto` therefore runs a private CA,
 name-constrained to `WASH_TLS_HOSTS`. Import it on each device once from `/ca.crt`
 (the login page links to it). The alternatives are `WASH_TLS=CERT,KEY`,
 or `WASH_TLS=off` behind Caddy with `WASH_TRUST_PROXY=1`.
-`WASH_REGISTRATION=closed` turns off passkey creation on the website.
+`WASH_REGISTRATION=open` lets anyone create passkeys at any time (default `closed`:
+only inside a `wash keys open` window).
+
+### Public deployment behind a reverse proxy
+
+* Give wash its own host name (e.g. `wash.example.com`). It needs to be at `/`
+  of its origin: the page uses absolute paths, and passkeys and cookies are
+  bound to the whole origin, so sharing it with other apps would let their bugs
+  reach wash.
+* `WASH_TLS=off`, `WASH_ORIGIN=https://wash.example.com`, and
+  `WASH_TRUST_PROXY` set to the proxy's address (IPs or CIDRs, comma separated).
+  wash-web then believes `X-Forwarded-For`/`-Proto` only from those peers, and
+  takes the right-most `X-Forwarded-For` entry that is not a proxy, so a client
+  cannot pick its own address for the rate limit. `WASH_TRUST_PROXY=1` trusts any
+  peer: only use it when the published port is bound to `127.0.0.1`.
+* `/api/link` (washd's connection) goes through the same proxy and is
+  protected by the manager token.
+* Sign-in does not reveal whether a user exists, has passkeys, or runs washd:
+  a user without approved passkeys gets a stable decoy challenge that always
+  fails. Detailed errors (e.g. "no shell manager is running") appear only after
+  a passkey that wash-web has approved was verified. Both sign-in requests take
+  at least 100 ms, so response time does not tell real users from decoys.
+
+### Accounts that can never use wash
+
+Root, well-known default accounts (`ubuntu`, `pi`, `ec2-user`, `admin`, ...),
+system names (`www-data`, `nobody`, `systemd-*`, ...) and service accounts are
+refused, on both sides:
+
+* **Host side** (washd and the `wash` CLI: `up`, `enroll`, `web enroll USER`):
+  the account must not be on the built-in list, must not be uid 0, must have a
+  uid inside `UID_MIN`..`UID_MAX` from `/etc/login.defs`, and must have a real
+  login shell. Rootless podman service users have `/usr/sbin/nologin`, so they
+  are refused.
+* **wash-web** (it cannot see the host's passwd): the built-in name list plus
+  `WASH_DENY_USERS`. A refused name gets the decoy at sign-in, cannot create
+  passkeys or redeem an enrollment code, and an existing manager link for it is
+  refused. List the host's service users there, e.g.
+  `awk -F: '$7 ~ /nologin|false/ && $3 >= 1000 {printf "%s,", $1}' /etc/passwd`.
 
 Link a user (each user that wants web shells does this once):
 
@@ -86,8 +130,8 @@ wash enroll        # as alice: gets a code + cert fingerprint from the wash-web 
 wash enroll https://ca-data:8443 CODE
 ```
 
-Then open the site, create a passkey, run `wash keys approve ID` as that
-user, and sign in.
+Then run `wash keys open` as that user, create a passkey on the site, run
+`wash keys approve ID`, and sign in.
 
 washd keeps running after you log out if you start it from systemd:
 `wash service install`, then `systemctl --user enable --now washd` and
@@ -98,7 +142,7 @@ washd keeps running after you log out if you start it from systemd:
 ```
 wash up | down [--kill-sessions] | restart | status | logs
 wash sessions [list] | new [NAME] | kill ID...|--all | rename ID NAME     (wash ls)
-wash keys [list] | approve ID | revoke ID
+wash keys [list] | open [DURATION] | close | approve ID | revoke ID
 wash config | config get KEY | config set KEY VALUE
       wosh, command, stun, turn, relay, transport (auto|webrtc|bridge), max_sessions, term
 wash enroll [URL [CODE]] [--fingerprint=SHA256] [--yes]
@@ -198,7 +242,8 @@ node --test web/test/term/*.test.mjs
 ```
 
 The e2e test runs wash-web and washd with real wosh daemons, using a
-software passkey. It covers enrollment, pending keys, refusing to approve
+software passkey. It covers enrollment, decoy sign-in challenges, the
+`wash keys open` window (capped at 1h, per user, closable), pending keys, refusing to approve
 another user's key, rejecting a key approved on the web side only, the
 dual-verified sign-in, single-use tickets, the bridge with offset resume,
 killing a session from the CLI, revocation closing a browser connection, and
@@ -206,9 +251,6 @@ purging pending keys after the TTL.
 
 ## Limitations / TODO
 
-* Not yet tested in a real browser (none was available while building).
-  The terminal was tested in node with a stubbed DOM. The Go side was tested
-  end to end.
 * Terminal: no reflow on resize. Kitty animation, unicode placeholders
   (`U=1`) and file/shm transmission are not supported. No kitty keyboard
   protocol.
