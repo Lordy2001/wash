@@ -10,9 +10,10 @@ const castURL = location.pathname.replace(/\/+$/, '') + '/cast';
 const SPEEDS = [0.25, 0.5, 1, 1.5, 2, 3, 4, 8, 16];
 
 // clipboard: false: a recorded OSC 52 (e.g. a yank in vim or tmux) must not
-// set the viewer's clipboard
-// ctrlCopyPaste: Ctrl+C copies the selected text
-const term = new Terminal($('term'), { fontSize: 15, clipboard: false, ctrlCopyPaste: true });
+// set the viewer's clipboard. mouseReporting: false: clicks select text even
+// where the recorded program had turned on mouse reporting. ctrlCopyPaste:
+// Ctrl+C copies the selection.
+const term = new Terminal($('term'), { fontSize: 15, clipboard: false, mouseReporting: false, ctrlCopyPaste: true });
 if (term.textarea) { term.textarea.readOnly = true; term.textarea.inputMode = 'none'; }
 term.onData = null;
 
@@ -141,22 +142,8 @@ track.addEventListener('pointerleave', () => { $('tip').hidden = true; });
 
 $('pp').onclick = toggle;
 $('big-play').onclick = play;
-// A click on the screen plays/pauses; a drag or double click selects text
-// instead (the terminal's own selection, not the page's).
-let downAt = null, clickTimer = 0;
-$('stage').addEventListener('pointerdown', (e) => {
-  downAt = { x: e.clientX, y: e.clientY, sel: !!term.getSelection() };
-}, true);
-$('stage').addEventListener('click', (e) => {
-  if (e.target.closest('#big-play')) return;
-  const moved = downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4;
-  clearTimeout(clickTimer);
-  // drag-select, the 2nd/3rd click of a word/line select, or a click that
-  // only clears a selection
-  if (moved || e.detail > 1 || downAt?.sel) return;
-  clickTimer = setTimeout(() => { if (!term.getSelection()) toggle(); }, 250);
-});
-$('stage').addEventListener('dblclick', () => clearTimeout(clickTimer));
+// The screen is for reading and selecting text (Ctrl+C copies); play and
+// pause are the buttons, the space bar and k.
 $('speed').onclick = (e) => setSpeed(e.shiftKey ? speed - 1 : (speed + 1) % SPEEDS.length);
 $('idle').onclick = toggleIdle;
 $('fs').onclick = () => (document.fullscreenElement ? document.exitFullscreen() : player.requestFullscreen()).catch(() => {});
@@ -164,6 +151,12 @@ $('dl').href = castURL;
 
 // keyboard (the same keys as asciinema's player where they overlap)
 window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.code === 'KeyC') {
+    // copy the selection wherever the focus is (the terminal does it too when focused)
+    const t = term.getSelection();
+    if (t) { e.preventDefault(); e.stopPropagation(); navigator.clipboard?.writeText(t).catch(() => {}); }
+    return;
+  }
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   const k = e.key;
   let handled = true;

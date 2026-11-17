@@ -45,6 +45,7 @@ export class Terminal {
     this.opts = {
       fontFamily: DEFAULT_FONT, fontSize: 15, scrollback: 5000, copyOnSelect: false, ctrlCopyPaste: false,
       clipboard: true, // OSC 52 from the program may set the clipboard (off for playback)
+      mouseReporting: true, // mouse modes the program sets get clicks (off for playback: they select)
       ...options,
       theme: { ...DEFAULT_THEME, ...(options.theme || {}) },
     };
@@ -439,7 +440,7 @@ export class Terminal {
 
   // ---- mouse ---------------------------------------------------------------------
 
-  _mouseReporting(e) { return this.screen.modes.mouse !== 0 && !e.shiftKey; }
+  _mouseReporting(e) { return this.opts.mouseReporting && this.screen.modes.mouse !== 0 && !e.shiftKey; }
 
   _report(button, cell, o) {
     const seq = encodeMouse(button, cell.col, cell.row, o, this.screen.modes);

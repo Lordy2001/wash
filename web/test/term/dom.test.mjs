@@ -211,3 +211,25 @@ test('touch: a vertical drag scrolls back, a tap focuses', async () => {
   assert.equal(focused, 1, 'a tap focuses');
   t.dispose();
 });
+
+test('playback terminal: clicks select text even in mouse mode, no clipboard writes', () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15, mouseReporting: false, clipboard: false });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  let copied = null;
+  const nav = globalThis.navigator;
+  Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async (s) => { copied = s; } } }, configurable: true });
+  try {
+    t.write('\x1b[?1000h\x1b[?1006hhello world\x1b]52;c;aGk=\x07');
+    flush();
+    t.canvas.dispatch('mousedown', { button: 0, detail: 1, clientX: 1, clientY: 1 });
+    window.dispatch('mousemove', { clientX: 40, clientY: 1 });
+    window.dispatch('mouseup', { clientX: 40, clientY: 1 });
+    assert.equal(sent.length, 0, 'no mouse reports');
+    assert.match(t.getSelection(), /^hell/);
+    assert.equal(copied, null, 'OSC 52 ignored');
+  } finally {
+    Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true });
+  }
+});
