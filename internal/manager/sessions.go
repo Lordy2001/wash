@@ -383,7 +383,7 @@ func (m *Manager) spawn(bin string, s *Session, cfg Config) error {
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Args[0] = "wosh"
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(sessionEnv(os.Environ()),
 		"WOSH_RUNTIME_DIR="+paths.SessionDir(),
 		"WOSH_LOOPBACK=1", // lets washd's bridge reach the daemon on hosts without a LAN address
 	)
@@ -416,6 +416,38 @@ func (m *Manager) spawn(bin string, s *Session, cfg Config) error {
 		_ = cmd.Process.Kill()
 		return errors.New("wosh daemon start timeout")
 	}
+}
+
+// terminalEnv lists variables that describe the terminal (or multiplexer)
+// washd happened to be started from. A wash session runs in the browser's
+// terminal, so they are wrong there, and some break programs: herdr refuses
+// to start when it sees HERDR_ENV ("nested herdr"), tmux and zellij think
+// they are nested, and so on. Names ending in "_" are prefixes.
+var terminalEnv = []string{
+	"HERDR_", "TMUX", "TMUX_PANE", "STY", "WINDOW", "ZELLIJ", "ZELLIJ_", "BYOBU_",
+	"TERM_PROGRAM", "TERM_PROGRAM_VERSION", "TERM_SESSION_ID", "LC_TERMINAL", "LC_TERMINAL_VERSION",
+	"COLORTERM", "COLORFGBG", "VTE_VERSION", "WT_SESSION", "WT_PROFILE_ID",
+	"KITTY_", "WEZTERM_", "ALACRITTY_", "ITERM_", "KONSOLE_", "GNOME_TERMINAL_", "GHOSTTY_",
+	"SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT", "WASH_SESSION",
+	// a wosh session's own (its settings, WOSH_PUSH, WOSH_STUN, ..., stay)
+	"WOSH_SESSION", "WOSH_SOCK", "WOSH_TOKEN", "WOSH_AGENT_SOCK", "WOSH_BIN_DIR", "WOSH_SRC", "WOSH_HOP_SSH",
+}
+
+// sessionEnv drops terminalEnv from washd's environment for a new session
+// (the offer sets TERM, COLORTERM and TERM_PROGRAM for the browser terminal).
+func sessionEnv(env []string) []string {
+	out := env[:0:0]
+outer:
+	for _, kv := range env {
+		name, _, _ := strings.Cut(kv, "=")
+		for _, t := range terminalEnv {
+			if name == t || strings.HasSuffix(t, "_") && strings.HasPrefix(name, t) {
+				continue outer
+			}
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // offerFor builds the wosh offer for a session (SDP filled in by the caller).
