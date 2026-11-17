@@ -60,7 +60,8 @@ sessions:
   wash sessions rename ID NAME
 
 recordings (asciicast v2, playable with asciinema too):
-  wash watch start SESSION_ID   record a session as a viewer (never takes control)
+  wash watch start SESSION_ID   record a session as a viewer (never takes control;
+                                alias: wash watch record SESSION_ID)
   wash watch stop SESSION_ID    stop recording it
   wash watch list               recordings with their FILE_ID and status (alias: ls)
   wash watch play FILE_ID [--raw] [--speed N] [--idle SECONDS|0]

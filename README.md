@@ -148,7 +148,7 @@ washd keeps running after you log out if you start it from systemd:
 wash up | down [--kill-sessions] | restart | status | logs
 wash sessions [list] | new [NAME] | kill ID...|--all | rename ID NAME     (wash ls)
 wash keys [list] | open [DURATION] | close | approve ID | revoke ID
-wash watch start SESSION | stop SESSION | list | play FILE_ID [--raw] | host FILE_ID | unhost FILE_ID | rm FILE_ID
+wash watch start|record SESSION | stop SESSION | list | play FILE_ID [--raw] | host FILE_ID | unhost FILE_ID | rm FILE_ID
 wash config | config get KEY | config set KEY VALUE
       wosh, command, stun, turn, relay, transport (auto|webrtc|bridge), max_sessions, term
 wash enroll [URL [CODE]] [--fingerprint=SHA256] [--yes]
@@ -167,6 +167,7 @@ Admin side: `wash web keys [USER] | managers | unenroll USER | fingerprint | bac
 
 ```
 wash watch start 3f9a        # record session 3f9a… (any unique prefix) as a viewer
+                             # (`wash watch record 3f9a` is the same)
 wash watch list              # ID, session, status (recording / stopped / hosted), length, size, URL
 wash watch stop 3f9a
 wash watch play 7c21         # play it in this terminal
