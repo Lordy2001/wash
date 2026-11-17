@@ -25,6 +25,9 @@
 //	                   1h with `wash keys open`) or "open" (anyone, any time)
 //	WASH_DENY_USERS    extra user names (comma separated) that may never use wash, on top
 //	                   of the built-in list (root, ubuntu, pi, system and service names)
+//	WASH_PUBLIC_URL    public base URL of the site, e.g. https://example.com/wash: the
+//	                   links `wash watch host` prints are WASH_PUBLIC_URL/playback/UUID
+//	WASH_PLAYBACK_MAX_MB  largest recording `wash watch host` may publish (default 512)
 //	WASH_TRUST_PROXY   behind a reverse proxy: comma-separated proxy IPs/CIDRs whose
 //	                   X-Forwarded-For/-Proto are believed, or 1 for any peer (then
 //	                   publish the port on 127.0.0.1 only). Default: off
@@ -113,6 +116,9 @@ func main() {
 		}
 		if err := db.Unenroll(args[0]); err != nil {
 			fatal("%v", err)
+		}
+		if n := web.RemovePlaybacks(filepath.Join(data, "playback"), args[0]); n > 0 {
+			fmt.Printf("removed %d hosted recording(s) of %s\n", n, args[0])
 		}
 	case "managers":
 		users, err := db.Managers()
@@ -266,6 +272,9 @@ func serve(data string) {
 		Proxies:      proxies,
 		DenyUsers:    denyUsers(),
 		CAFile:       caFile,
+		PlaybackDir:  filepath.Join(data, "playback"),
+		PlaybackMax:  playbackMax(),
+		PublicURL:    strings.TrimRight(os.Getenv("WASH_PUBLIC_URL"), "/"),
 	}, db)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -336,6 +345,16 @@ func trustedProxies(v string) (bool, []netip.Prefix, error) {
 		out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
 	}
 	return true, out, nil
+}
+
+func playbackMax() int64 {
+	mb := int64(512)
+	if v := os.Getenv("WASH_PLAYBACK_MAX_MB"); v != "" {
+		if _, err := fmt.Sscan(v, &mb); err != nil || mb < 0 {
+			log.Fatalf("WASH_PLAYBACK_MAX_MB=%q: want a number of MiB", v)
+		}
+	}
+	return mb << 20
 }
 
 func denyUsers() map[string]bool { return userpolicy.ParseList(os.Getenv("WASH_DENY_USERS")) }

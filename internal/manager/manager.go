@@ -60,6 +60,8 @@ type Manager struct {
 	nonces    map[string]time.Time // hex nonce -> expiry
 	tickets   map[string]*ticket   // sha256 hex -> ticket
 	conns     map[*browserConn]bool
+	recs      map[string]*Recording // `wash watch` recordings
+	recorders map[string]*recorder  // ...the running ones
 	peer      *link.Peer
 	agentSock string // user's ssh-agent for washd's own ssh (routes)
 	linkErr   string
@@ -83,9 +85,11 @@ func New() (*Manager, error) {
 		sessions: map[string]*Session{}, attached: map[string]int{},
 		nonces: map[string]time.Time{}, tickets: map[string]*ticket{},
 		conns: map[*browserConn]bool{}, started: time.Now(), quit: make(chan struct{}),
+		recs: map[string]*Recording{}, recorders: map[string]*recorder{},
 	}
 	m.agentSock = os.Getenv("SSH_AUTH_SOCK") // from `wash up`; `wash agent` updates it
 	m.loadSessions()
+	m.loadRecordings()
 	return m, nil
 }
 
@@ -108,6 +112,7 @@ func (m *Manager) Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go m.linkLoop(ctx)
+	m.resumeRecordings()
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for {
@@ -120,7 +125,17 @@ func (m *Manager) Run() error {
 			if m.peer != nil {
 				m.peer.Close("washd stopped")
 			}
+			rs := make([]*recorder, 0, len(m.recorders))
+			for _, r := range m.recorders {
+				rs = append(rs, r)
+			}
 			m.mu.Unlock()
+			for _, r := range rs { // flush their files; they resume on the next start
+				select {
+				case <-r.done:
+				case <-time.After(3 * time.Second):
+				}
+			}
 			return nil
 		case <-t.C:
 			if m.prune() {

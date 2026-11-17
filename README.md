@@ -148,6 +148,7 @@ washd keeps running after you log out if you start it from systemd:
 wash up | down [--kill-sessions] | restart | status | logs
 wash sessions [list] | new [NAME] | kill ID...|--all | rename ID NAME     (wash ls)
 wash keys [list] | open [DURATION] | close | approve ID | revoke ID
+wash watch start SESSION | stop SESSION | list | play FILE_ID [--raw] | host FILE_ID | unhost FILE_ID | rm FILE_ID
 wash config | config get KEY | config set KEY VALUE
       wosh, command, stun, turn, relay, transport (auto|webrtc|bridge), max_sessions, term
 wash enroll [URL [CODE]] [--fingerprint=SHA256] [--yes]
@@ -161,6 +162,49 @@ then `wash up` finds the sessions again). washd needs a `wosh` binary: PATH,
 `~/.local/bin`, `~/go/bin`, or `wash config set wosh PATH`.
 
 Admin side: `wash web keys [USER] | managers | unenroll USER | fingerprint | backup FILE`.
+
+## Recordings (`wash watch`)
+
+```
+wash watch start 3f9a        # record session 3f9a… (any unique prefix) as a viewer
+wash watch list              # ID, session, status (recording / stopped / hosted), length, size, URL
+wash watch stop 3f9a
+wash watch play 7c21         # play it in this terminal
+wash watch host 7c21         # publish: prints https://…/playback/<uuid>
+wash watch unhost 7c21       # take it down again
+wash watch rm 7c21           # delete it (unpublishes first)
+```
+
+* **Recording.** washd joins the session as a *passive* wosh peer (offer field
+  `watch`): it gets the same output a watching browser gets, it never takes control,
+  is never promoted to controller and cannot take control. This needs a wosh daemon with
+  passive-peer support. An older daemon that makes the recorder its controller stops the
+  recording with an error; start a new session after updating wosh. The recording starts
+  with what is still in the daemon's 4 MiB output ring, so the screen is complete from the
+  first frame. Output is addressed by byte offset, so reconnects and washd restarts
+  (`wash down`, `wash up`) continue without gaps or repeats. Time spent while washd was
+  down is skipped. A recording stops by itself when the session ends.
+* **Format.** asciicast v2 (asciinema's format) in `~/.local/share/wash/recordings/ID.cast`,
+  with state in `~/.local/state/wash/recordings.json`. `asciinema play` and asciinema's web
+  player read these files too. The header sets `idle_time_limit: 2`, so players cut
+  long pauses to 2 s.
+* **`wash watch play`** works without washd and also takes a path to any `.cast` file.
+  It runs the recording in a virtual terminal (charmbracelet/x/vt), framed, with a title bar,
+  a progress bar and key help. Keys: space play/pause, ←/→ 5 s, ↑/↓ 30 s, 0–9 jump to 0–90 %,
+  `,` `.` step one event, `+` `-` speed, `i` turn pause cutting on and off, `q` quit. A
+  recording larger than the terminal is cropped around the cursor. `--raw` writes it
+  straight to the terminal instead, as `asciinema play` does: exact rendering and kitty
+  images, but no frame. `--speed N` and `--idle SECONDS` (0 = real time) set the starting
+  values.
+* **Hosting.** `wash watch host` uploads the cast over washd's link, and wash-web serves an
+  asciinema-style player at `/playback/UUID`: a big play button, a progress bar you can
+  click or drag, speed and pause-cutting buttons, download, fullscreen and the same keys
+  (plus `f`). `#t=SECONDS` in the URL starts there. **There is no sign-in: anyone with
+  the link can watch.** The random UUID is the only secret, and the page is marked
+  `noindex`. Hosting a recording in progress publishes what is recorded so far, and the
+  published copy is replaced when the recording stops. The link is
+  `WASH_PUBLIC_URL/playback/UUID`, or the enrolled wash-web URL if `WASH_PUBLIC_URL` is
+  not set. Limits: `WASH_PLAYBACK_MAX_MB` (default 512) per recording, 200 per user.
 
 ## Transport
 

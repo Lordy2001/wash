@@ -28,6 +28,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/fxamacker/cbor/v2"
 
+	"wash/internal/cast"
 	"wash/internal/link"
 	"wash/internal/manager"
 	"wash/internal/web"
@@ -161,7 +162,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(root) })
 	for k, v := range map[string]string{
-		"HOME": root, "XDG_CONFIG_HOME": root + "/c", "XDG_STATE_HOME": root + "/st",
+		"HOME": root, "XDG_CONFIG_HOME": root + "/c", "XDG_STATE_HOME": root + "/st", "XDG_DATA_HOME": root + "/d",
 		"WASH_RUNTIME_DIR": root + "/r", "SHELL": "/bin/sh",
 	} {
 		t.Setenv(k, v)
@@ -171,7 +172,7 @@ func TestEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := web.New(web.Config{Static: webui.Static(), Version: "test"}, db)
+	srv := web.New(web.Config{Static: webui.Static(), Version: "test", PlaybackDir: filepath.Join(root, "playback")}, db)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	base := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
@@ -592,6 +593,76 @@ func TestEndToEnd(t *testing.T) {
 	B2 := &view{c: bridgeAs("tabB", false)}
 	if err := pump(B2, func() bool { return B2.role != "" }); err != nil || B2.role != "control" {
 		t.Fatalf("tabB reconnect: %q %v", B2.role, err)
+	}
+
+	// --- wash watch: record as a passive viewer, publish, unpublish --------------------------
+	var rec manager.RecordingInfo
+	if err := manager.Call(manager.Request{Op: "watch.start", ID: sid}, &rec); err != nil {
+		t.Fatalf("watch start: %v", err)
+	}
+	if err := manager.Call(manager.Request{Op: "watch.start", ID: sid}, nil); err == nil {
+		t.Fatal("a session was recorded twice at once")
+	}
+	// the recorder never takes control: tabB still types
+	_ = B2.c.Write(ctx, websocket.MessageBinary, frame(wosh.FInput, B2.ack, []byte("echo rec-$((6*7))\r")))
+	if err := pump(B2, func() bool { return strings.Contains(B2.out.String(), "rec-42") }); err != nil || B2.role != "control" {
+		t.Fatalf("controller while recording: %v role %q", err, B2.role)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if err := manager.Call(manager.Request{Op: "watch.stop", ID: sid}, &rec); err != nil || rec.State != "stopped" {
+		t.Fatalf("watch stop: %v %+v", err, rec)
+	}
+	rc, err := cast.ReadFile(rec.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded strings.Builder
+	for _, ev := range rc.Events {
+		if ev.Type == "o" {
+			recorded.WriteString(ev.Data)
+		}
+	}
+	if rc.Header.Width != 90 || rc.Header.Height != 33 || !strings.Contains(recorded.String(), "rec-42") ||
+		!strings.Contains(recorded.String(), "wash-42") { // earlier output comes from the daemon's ring
+		t.Fatalf("recording: %+v %q", rc.Header, recorded.String())
+	}
+	if err := manager.Call(manager.Request{Op: "watch.host", ID: rec.ID[:4]}, &rec); err != nil || rec.Hosted == nil {
+		t.Fatalf("watch host: %v %+v", err, rec)
+	}
+	pub := rec.Hosted.URL
+	if !strings.HasPrefix(pub, base+"/playback/") {
+		t.Fatalf("playback url %q", pub)
+	}
+	get := func(u string) (int, string) {
+		resp, err := http.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
+	}
+	if st, body := get(pub); st != 200 || !strings.Contains(body, "playback.js") {
+		t.Fatalf("playback page: %d", st)
+	}
+	if st, body := get(pub + "/cast"); st != 200 || !strings.Contains(body, "rec-42") {
+		t.Fatalf("playback cast: %d", st)
+	}
+	if st, _ := get(base + "/playback/00000000-0000-4000-8000-000000000000"); st != 404 {
+		t.Fatalf("unknown playback: %d", st)
+	}
+	if err := manager.Call(manager.Request{Op: "watch.unhost", ID: rec.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := get(pub + "/cast"); st != 404 {
+		t.Fatalf("unhosted playback still served: %d", st)
+	}
+	var recs []manager.RecordingInfo
+	if err := manager.Call(manager.Request{Op: "watch.rm", ID: rec.ID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Call(manager.Request{Op: "watch.list"}, &recs); err != nil || len(recs) != 0 {
+		t.Fatalf("after rm: %v %+v", err, recs)
 	}
 
 	// --- kill from the CLI side -----------------------------------------------------------

@@ -44,6 +44,9 @@ type Config struct {
 	Proxies      []netip.Prefix  // ... but only from these peers (empty: from any peer)
 	CAFile       string          // wash-web's own CA, served at /ca.crt for users to trust
 	DenyUsers    map[string]bool // refused on top of userpolicy.Reserved (WASH_DENY_USERS)
+	PlaybackDir  string          // published recordings (`wash watch host`); "" = off
+	PlaybackMax  int64           // largest published recording in bytes (0 = no limit)
+	PublicURL    string          // public base URL (WASH_PUBLIC_URL), for playback links
 }
 
 // MaxRegWindow is the longest `wash keys open` window.
@@ -62,6 +65,7 @@ type Server struct {
 	limits     map[string]*bucket
 	regOpen    map[string]time.Time // user -> passkey creation allowed until
 	secret     []byte               // keys decoy login challenges
+	uploads    map[string]*upload   // playback uuid -> upload in progress
 }
 
 type ceremony struct {
@@ -115,6 +119,7 @@ func New(cfg Config, db *DB) *Server {
 		links:      map[string]*link.Peer{},
 		waiters:    map[string]*waiter{},
 		limits:     map[string]*bucket{},
+		uploads:    map[string]*upload{},
 	}
 }
 
@@ -133,6 +138,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/enroll", s.limited(s.handleEnroll))
 	mux.HandleFunc("GET /api/link", s.handleLink)
 	mux.HandleFunc("GET /api/link/conn", s.handleLinkConn)
+	mux.HandleFunc("GET /playback/{id}", s.handlePlaybackPage)
+	mux.HandleFunc("GET /playback/{id}/cast", s.handlePlaybackCast)
 	return securityHeaders(mux)
 }
 
@@ -166,6 +173,7 @@ func (s *Server) Janitor(ctx context.Context) {
 				delete(s.limits, k)
 			}
 		}
+		s.expireUploadsLocked(now)
 		for k, until := range s.regOpen {
 			if now.After(until) {
 				delete(s.regOpen, k)
@@ -930,6 +938,10 @@ func (s *Server) managerHandler(user string) link.Handler {
 		switch op {
 		case link.OpInfo:
 			return link.Info{User: user, Version: s.cfg.Version}, nil
+		case link.OpPlaybackPut:
+			return s.playbackPut(user, data)
+		case link.OpPlaybackDel:
+			return s.playbackDel(user, data)
 		case link.OpKeysList:
 			rows, err := s.db.Keys(user)
 			if err != nil {

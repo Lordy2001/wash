@@ -10,6 +10,11 @@ KEEP=14
 podman exec wash-web /wash-web backup "/backup/wash-$STAMP.db"
 # losing tls/ means every user must re-run `wash enroll` (new fingerprint)
 tar -C /data-active/wash -czf "$DEST/wash-tls-$STAMP.tar.gz" tls
+# recordings published with `wash watch host` (the owners keep the originals)
+if [ -d /data-active/wash/playback ]; then
+	tar -C /data-active/wash -czf "$DEST/wash-playback-$STAMP.tar.gz" playback
+fi
 
 find "$DEST" -name 'wash-*.db'         -mtime +$KEEP -delete
 find "$DEST" -name 'wash-tls-*.tar.gz' -mtime +$KEEP -delete
+find "$DEST" -name 'wash-playback-*.tar.gz' -mtime +$KEEP -delete

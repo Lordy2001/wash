@@ -184,6 +184,11 @@ Notes:
   `PublishPort=127.0.0.1:8443:8443`. washd still needs a route to wash-web. Either
   enroll it against the Caddy URL, or keep `WASH_TLS=auto` and let Caddy proxy to
   `https://ca-data:8443` with `tls_insecure_skip_verify`.
+- Published recordings (`wash watch host`) are served at `/playback/UUID` with no sign-in,
+  so through the Caddy block above they are `https://ca.ffeineaddiction.com/wash/playback/UUID`.
+  Set `WASH_PUBLIC_URL=https://ca.ffeineaddiction.com/wash` in `.env` so `wash watch host`
+  prints that link. Files are in `/data-active/wash/playback` (`UUID.cast` + `UUID.json`);
+  the backup tars them, and `wash-web unenroll USER` deletes that user's.
 - Losing `/data-active/wash/tls` changes the certificate. Every washd then refuses the
   link (pin mismatch) until its user runs `wash enroll` again. That is why the backup
   includes it.

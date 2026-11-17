@@ -41,7 +41,36 @@ const (
 	OpKeysRevoke  = "keys.revoke"  // KeyRef -> {}
 	OpKeysOpen    = "keys.open"    // RegWindow -> RegWindow (allow passkey creation for a while)
 	OpInfo        = "info"         // -> Info
+	OpPlaybackPut = "playback.put" // PlaybackChunk -> PlaybackInfo (publish a recording)
+	OpPlaybackDel = "playback.del" // PlaybackRef -> {}
 )
+
+// PlaybackChunk uploads a recording (asciicast v2) for public playback at
+// /playback/UUID, in order: Seq 0 starts (or replaces) it, Last publishes it.
+// The UUID is chosen by washd; wash-web only accepts it from the user that
+// first published it.
+type PlaybackChunk struct {
+	UUID  string `json:"uuid"`
+	Seq   int    `json:"seq"`
+	Data  []byte `json:"data"`
+	Last  bool   `json:"last,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
+// PlaybackChunkSize keeps a chunk (base64 in JSON) under the link's read limit.
+const PlaybackChunkSize = 1 << 20
+
+type PlaybackRef struct {
+	UUID string `json:"uuid"`
+}
+
+// PlaybackInfo is the reply to the last chunk.
+type PlaybackInfo struct {
+	UUID string `json:"uuid"`
+	URL  string `json:"url,omitempty"` // public URL (WASH_PUBLIC_URL), if wash-web knows it
+	Path string `json:"path"`          // /playback/UUID
+	Size int64  `json:"size"`
+}
 
 type Nonce struct {
 	Nonce []byte `json:"nonce"`

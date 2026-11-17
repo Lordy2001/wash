@@ -59,6 +59,18 @@ sessions:
   wash sessions kill ID...|--all
   wash sessions rename ID NAME
 
+recordings (asciicast v2, playable with asciinema too):
+  wash watch start SESSION_ID   record a session as a viewer (never takes control)
+  wash watch stop SESSION_ID    stop recording it
+  wash watch list               recordings with their FILE_ID and status (alias: ls)
+  wash watch play FILE_ID [--raw] [--speed N] [--idle SECONDS|0]
+                                play in this terminal (--raw: straight to the terminal,
+                                like asciinema play)
+  wash watch host FILE_ID       publish on the website: prints a public link
+                                (WASH_PUBLIC_URL/playback/UUID); anyone with it can watch
+  wash watch unhost FILE_ID     remove it from the website
+  wash watch rm FILE_ID...      delete recordings
+
 passkeys (only your own user's):
   wash keys                     approved and pending passkeys
   wash keys open [DURATION]     allow creating a passkey for you on the website
@@ -117,6 +129,8 @@ func main() {
 			rest = nil
 		}
 		err = sessions(rest)
+	case "watch", "rec", "recordings":
+		err = watch(rest)
 	case "keys", "key":
 		err = keys(rest)
 	case "config":

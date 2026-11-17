@@ -3,7 +3,8 @@
 //	~/.config/wash/manager.json   link credentials (url, token, pinned cert)  0600
 //	~/.config/wash/config.json    manager settings                            0600
 //	~/.config/wash/keys.json      passkeys this user approved                  0600
-//	~/.local/state/wash/          sessions.json, washd.log
+//	~/.local/state/wash/          sessions.json, recordings.json, washd.log
+//	~/.local/share/wash/recordings/  session recordings (asciicast v2, ID.cast)
 //	$XDG_RUNTIME_DIR/wash/        washd.sock, washd.pid, s/ (wosh daemon sockets)
 package paths
 
@@ -41,6 +42,23 @@ func StateDir() string {
 	}
 	return mk(filepath.Join(home(), ".local", "state", "wash"))
 }
+
+// DataDir: ~/.local/share/wash
+func DataDir() string {
+	if x := os.Getenv("XDG_DATA_HOME"); x != "" {
+		return mk(filepath.Join(x, "wash"))
+	}
+	return mk(filepath.Join(home(), ".local", "share", "wash"))
+}
+
+// RecordingsDir holds `wash watch` recordings.
+func RecordingsDir() string { return mk(filepath.Join(DataDir(), "recordings")) }
+
+// RecordingFile is a recording's cast.
+func RecordingFile(id string) string { return filepath.Join(RecordingsDir(), id+".cast") }
+
+// RecordingsFile lists the recordings and their state.
+func RecordingsFile() string { return filepath.Join(StateDir(), "recordings.json") }
 
 // RuntimeDir: $XDG_RUNTIME_DIR/wash (0700), or /tmp/wash-UID.
 func RuntimeDir() string {

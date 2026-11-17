@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>wash playback</title>
+<link rel="stylesheet" href="../playback.css">
+</head>
+<body>
+<main id="player" tabindex="0" aria-label="terminal recording player">
+  <div id="stage">
+    <div id="term"></div>
+    <button id="big-play" type="button" aria-label="play">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="31"/><path d="M26 20 L46 32 L26 44 Z"/></svg>
+    </button>
+    <div id="msg" hidden></div>
+  </div>
+  <div id="bar">
+    <button id="pp" type="button" aria-label="play / pause (space)">
+      <svg class="i-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2 L13 8 L4 14 Z"/></svg>
+      <svg class="i-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2h3.5v12H3zM9.5 2H13v12H9.5z"/></svg>
+    </button>
+    <span id="time">00:00 / 00:00</span>
+    <div id="track" role="slider" aria-label="position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div id="buffer"></div><div id="done"></div><div id="knob"></div><div id="tip" hidden></div>
+    </div>
+    <button id="speed" type="button" title="speed (+ / -)">1x</button>
+    <button id="idle" type="button" title="cut long pauses (i)">idle ≤2s</button>
+    <a id="dl" href="#" download title="download (asciicast v2: plays with asciinema too)">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7 1h2v7h3l-4 4-4-4h3zM2 13h12v2H2z"/></svg>
+    </a>
+    <button id="fs" type="button" aria-label="fullscreen (f)">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 1h5v2H3v3H1zM10 1h5v5h-2V3h-3zM1 10h2v3h3v2H1zM13 10h2v5h-5v-2h3z"/></svg>
+    </button>
+  </div>
+  <div id="title"></div>
+</main>
+<script type="module" src="../playback.js"></script>
+</body>
+</html>

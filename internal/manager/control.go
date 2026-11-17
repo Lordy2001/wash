@@ -98,6 +98,9 @@ func (m *Manager) serveControl(c net.Conn) {
 	if err := json.Unmarshal(line, &req); err != nil {
 		resp.Err = "bad request"
 	} else {
+		if req.Op == "watch.host" { // uploads can take a while
+			_ = c.SetDeadline(time.Now().Add(30 * time.Minute))
+		}
 		v, err := m.control(req)
 		if err != nil {
 			resp.Err = err.Error()
@@ -165,6 +168,20 @@ func (m *Manager) control(req Request) (any, error) {
 		return m.OpenRegistration(ctx, d)
 	case "agent":
 		return nil, m.SetAgent(req.Val)
+	case "watch.start":
+		return m.StartRecording(req.ID)
+	case "watch.stop":
+		return m.StopRecording(req.ID)
+	case "watch.list":
+		return m.Recordings(), nil
+	case "watch.host":
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		return m.Host(ctx, req.ID)
+	case "watch.unhost":
+		return nil, m.Unhost(ctx, req.ID)
+	case "watch.rm":
+		return nil, m.RemoveRecording(ctx, req.ID)
 	case "config.reload":
 		m.mu.Lock()
 		m.cfg = LoadConfig()
@@ -175,13 +192,16 @@ func (m *Manager) control(req Request) (any, error) {
 }
 
 // Call sends one request to a running washd (used by `wash`).
-func Call(req Request, out any) error {
+func Call(req Request, out any) error { return CallTimeout(req, out, 2*time.Minute) }
+
+// CallTimeout is Call with a longer (or shorter) wait for the reply.
+func CallTimeout(req Request, out any, d time.Duration) error {
 	c, err := net.DialTimeout("unix", paths.Socket(), time.Second)
 	if err != nil {
 		return ErrNotRunning
 	}
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(2 * time.Minute))
+	_ = c.SetDeadline(time.Now().Add(d))
 	b, _ := json.Marshal(req)
 	if _, err := c.Write(append(b, '\n')); err != nil {
 		return err
