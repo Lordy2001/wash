@@ -2,6 +2,8 @@ package manager
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -10,6 +12,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +50,7 @@ type Hosted struct {
 	UUID string    `json:"uuid"`
 	URL  string    `json:"url"`
 	At   time.Time `json:"at"`
-	Size int64     `json:"size"` // bytes published (less than the file while still recording)
+	Dur  float64   `json:"dur"` // seconds published (less than recorded while still recording)
 }
 
 // RecordingInfo is what `wash watch list` shows.
@@ -278,8 +281,10 @@ func (m *Manager) RemoveRecording(ctx context.Context, id string) error {
 	delete(m.recs, r.ID)
 	m.saveRecordingsLocked()
 	m.mu.Unlock()
-	if err := os.Remove(paths.RecordingFile(r.ID)); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, p := range []string{filepath.Join(paths.RecordingsDir(), r.ID+".cast"), filepath.Join(paths.RecordingsDir(), r.ID+".cast.gz")} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	log.Printf("recording %s removed", r.ID)
 	return nil
@@ -309,14 +314,25 @@ func (m *Manager) startRecorder(id string) {
 // runRecorder keeps a recorder connected until it is stopped, the session
 // ends, or washd quits (then the recording resumes on the next start).
 func (m *Manager) runRecorder(r *Recording, rr *recorder) {
-	f, err := os.OpenFile(paths.RecordingFile(r.ID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	path := paths.RecordingFile(r.ID)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		m.finishRecording(r, err.Error())
 		return
 	}
 	defer f.Close()
-	bw := bufio.NewWriterSize(f, 64<<10)
-	defer bw.Flush()
+	// gzip: each run of the recorder appends one member (readers handle
+	// several), flushed every few seconds so a crash loses little
+	var bw flushWriter
+	if strings.HasSuffix(path, ".gz") {
+		zw, _ := gzip.NewWriterLevel(f, gzip.BestCompression)
+		defer zw.Close()
+		bw = zw
+	} else { // an uncompressed recording from an older washd
+		b := bufio.NewWriterSize(f, 64<<10)
+		defer b.Flush()
+		bw = b
+	}
 	st, _ := f.Stat()
 	w := &recWriter{m: m, r: r, bw: bw, hasHeader: st.Size() > 0}
 	m.mu.Lock()
@@ -373,11 +389,16 @@ func (m *Manager) saveRecordings() {
 	m.mu.Unlock()
 }
 
+type flushWriter interface {
+	io.Writer
+	Flush() error
+}
+
 // recWriter turns wosh frames into cast events.
 type recWriter struct {
 	m         *Manager
 	r         *Recording
-	bw        *bufio.Writer
+	bw        flushWriter
 	cw        *cast.Writer
 	base      time.Time
 	hasHeader bool
@@ -609,47 +630,37 @@ func (m *Manager) Host(ctx context.Context, id string) (RecordingInfo, error) {
 	if uuid == "" {
 		uuid = newUUID()
 	}
-	f, err := os.Open(paths.RecordingFile(r.ID))
+	// one complete gzip stream of the whole lines recorded so far
+	m.mu.Lock()
+	dur := r.Dur
+	m.mu.Unlock()
+	var gz bytes.Buffer
+	size, err := cast.Compress(&gz, paths.RecordingFile(r.ID))
 	if err != nil {
 		return RecordingInfo{}, err
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil {
-		return RecordingInfo{}, err
-	}
-	if st.Size() == 0 {
+	if size == 0 {
 		return RecordingInfo{}, errors.New("nothing recorded yet")
 	}
-	// a recording in progress: publish whole lines only
-	size := st.Size()
-	tail := make([]byte, min(size, 64<<10))
-	if _, err := f.ReadAt(tail, size-int64(len(tail))); err == nil {
-		if i := strings.LastIndexByte(string(tail), '\n'); i >= 0 {
-			size = size - int64(len(tail)) + int64(i) + 1
-		}
-	}
 	var info link.PlaybackInfo
-	src := io.LimitReader(f, size)
-	buf := make([]byte, link.PlaybackChunkSize)
-	for seq, sent := 0, int64(0); ; seq++ {
-		n, rerr := io.ReadFull(src, buf)
-		sent += int64(n)
-		last := sent >= size || rerr != nil
-		ch := link.PlaybackChunk{UUID: uuid, Seq: seq, Data: buf[:n], Last: last, Title: title}
+	data := gz.Bytes()
+	for seq, off := 0, 0; ; seq++ {
+		end := min(off+link.PlaybackChunkSize, len(data))
+		ch := link.PlaybackChunk{UUID: uuid, Seq: seq, Data: data[off:end], Last: end == len(data), Title: title, Gzip: true}
 		if err := p.Call(ctx, link.OpPlaybackPut, ch, &info); err != nil {
 			return RecordingInfo{}, fmt.Errorf("publish: %w", err)
 		}
-		if last {
+		if ch.Last {
 			break
 		}
+		off = end
 	}
 	url := info.URL
 	if url == "" {
 		url = strings.TrimRight(m.creds.URL, "/") + info.Path
 	}
 	m.mu.Lock()
-	r.Hosted = &Hosted{UUID: uuid, URL: url, At: time.Now(), Size: size}
+	r.Hosted = &Hosted{UUID: uuid, URL: url, At: time.Now(), Dur: dur}
 	m.saveRecordingsLocked()
 	ri := m.recInfoLocked(r)
 	m.mu.Unlock()

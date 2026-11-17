@@ -187,7 +187,7 @@ Notes:
 - Published recordings (`wash watch host`) are served at `/playback/UUID` with no sign-in,
   so through the Caddy block above they are `https://ca.ffeineaddiction.com/wash/playback/UUID`.
   Set `WASH_PUBLIC_URL=https://ca.ffeineaddiction.com/wash` in `.env` so `wash watch host`
-  prints that link. Files are in `/data-active/wash/playback` (`UUID.cast` + `UUID.json`);
+  prints that link. Files are in `/data-active/wash/playback` (`UUID.cast.gz` + `UUID.json`);
   the backup tars them, and `wash-web unenroll USER` deletes that user's.
 - Losing `/data-active/wash/tls` changes the certificate. Every washd then refuses the
   link (pin mismatch) until its user runs `wash enroll` again. That is why the backup

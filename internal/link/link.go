@@ -55,6 +55,7 @@ type PlaybackChunk struct {
 	Data  []byte `json:"data"`
 	Last  bool   `json:"last,omitempty"`
 	Title string `json:"title,omitempty"`
+	Gzip  bool   `json:"gzip,omitempty"` // Data is one gzip stream (else plain asciicast)
 }
 
 // PlaybackChunkSize keeps a chunk (base64 in JSON) under the link's read limit.

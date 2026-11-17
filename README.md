@@ -184,9 +184,11 @@ wash watch rm 7c21           # delete it (unpublishes first)
   first frame. Output is addressed by byte offset, so reconnects and washd restarts
   (`wash down`, `wash up`) continue without gaps or repeats. Time spent while washd was
   down is skipped. A recording stops by itself when the session ends.
-* **Format.** asciicast v2 (asciinema's format) in `~/.local/share/wash/recordings/ID.cast`,
-  with state in `~/.local/state/wash/recordings.json`. `asciinema play` and asciinema's web
-  player read these files too. The header sets `idle_time_limit: 2`, so players cut
+* **Format.** asciicast v2 (asciinema's format), gzip-compressed, in
+  `~/.local/share/wash/recordings/ID.cast.gz`, with state in
+  `~/.local/state/wash/recordings.json`. Each recorder run (a washd restart resumes the
+  recording) appends one gzip member, flushed every 5 s. `zcat ID.cast.gz` gives a plain
+  `.cast` that `asciinema play` and asciinema's web player read. The header sets `idle_time_limit: 2`, so players cut
   long pauses to 2 s.
 * **`wash watch play`** works without washd and also takes a path to any `.cast` file.
   It runs the recording in a virtual terminal (charmbracelet/x/vt), framed, with a title bar,
@@ -199,12 +201,14 @@ wash watch rm 7c21           # delete it (unpublishes first)
 * **Hosting.** `wash watch host` uploads the cast over washd's link, and wash-web serves an
   asciinema-style player at `/playback/UUID`: a big play button, a progress bar you can
   click or drag, speed and pause-cutting buttons, download, fullscreen and the same keys
-  (plus `f`). `#t=SECONDS` in the URL starts there. **There is no sign-in: anyone with
+  (plus `f`). `#t=SECONDS` in the URL starts there. The upload is stored and served
+  gzip-compressed. **There is no sign-in: anyone with
   the link can watch.** The random UUID is the only secret, and the page is marked
   `noindex`. Hosting a recording in progress publishes what is recorded so far, and the
   published copy is replaced when the recording stops. The link is
   `WASH_PUBLIC_URL/playback/UUID`, or the enrolled wash-web URL if `WASH_PUBLIC_URL` is
-  not set. Limits: `WASH_PLAYBACK_MAX_MB` (default 512) per recording, 200 per user.
+  not set. Limits: `WASH_PLAYBACK_MAX_MB` (default 512, compressed size) per recording,
+  200 per user.
 
 ## Transport
 

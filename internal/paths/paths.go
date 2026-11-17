@@ -4,7 +4,7 @@
 //	~/.config/wash/config.json    manager settings                            0600
 //	~/.config/wash/keys.json      passkeys this user approved                  0600
 //	~/.local/state/wash/          sessions.json, recordings.json, washd.log
-//	~/.local/share/wash/recordings/  session recordings (asciicast v2, ID.cast)
+//	~/.local/share/wash/recordings/  session recordings (asciicast v2, gzip: ID.cast.gz)
 //	$XDG_RUNTIME_DIR/wash/        washd.sock, washd.pid, s/ (wosh daemon sockets)
 package paths
 
@@ -54,8 +54,15 @@ func DataDir() string {
 // RecordingsDir holds `wash watch` recordings.
 func RecordingsDir() string { return mk(filepath.Join(DataDir(), "recordings")) }
 
-// RecordingFile is a recording's cast.
-func RecordingFile(id string) string { return filepath.Join(RecordingsDir(), id+".cast") }
+// RecordingFile is a recording's cast (gzip). An uncompressed ID.cast from
+// before compression is used as long as it exists.
+func RecordingFile(id string) string {
+	plain := filepath.Join(RecordingsDir(), id+".cast")
+	if _, err := os.Stat(plain); err == nil {
+		return plain
+	}
+	return plain + ".gz"
+}
 
 // RecordingsFile lists the recordings and their state.
 func RecordingsFile() string { return filepath.Join(StateDir(), "recordings.json") }

@@ -612,6 +612,9 @@ func TestEndToEnd(t *testing.T) {
 	if err := manager.Call(manager.Request{Op: "watch.stop", ID: sid}, &rec); err != nil || rec.State != "stopped" {
 		t.Fatalf("watch stop: %v %+v", err, rec)
 	}
+	if !strings.HasSuffix(rec.Path, ".cast.gz") {
+		t.Fatalf("recording not compressed: %s", rec.Path)
+	}
 	rc, err := cast.ReadFile(rec.Path)
 	if err != nil {
 		t.Fatal(err)
@@ -647,6 +650,19 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if st, body := get(pub + "/cast"); st != 200 || !strings.Contains(body, "rec-42") {
 		t.Fatalf("playback cast: %d", st)
+	}
+	{ // a client without gzip gets it decompressed
+		req, _ := http.NewRequest("GET", pub+"/cast", nil)
+		req.Header.Set("Accept-Encoding", "identity")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.Header.Get("Content-Encoding") != "" || !strings.Contains(string(b), "rec-42") {
+			t.Fatalf("identity cast: %q %.80q", resp.Header.Get("Content-Encoding"), b)
+		}
 	}
 	if st, _ := get(base + "/playback/00000000-0000-4000-8000-000000000000"); st != 404 {
 		t.Fatalf("unknown playback: %d", st)

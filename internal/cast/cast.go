@@ -7,6 +7,7 @@ package cast
 
 import (
 	"bufio"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,6 +133,59 @@ func (c *Cast) Duration() float64 {
 	return c.Events[len(c.Events)-1].T
 }
 
+// Open opens a cast file, compressed (gzip, any number of members: a
+// recording that was resumed appends one) or not.
+func Open(path string) (io.ReadCloser, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(f)
+	if magic, _ := br.Peek(2); len(magic) == 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		zr, err := gzip.NewReader(br)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return readCloser{zr, f}, nil
+	}
+	return readCloser{br, f}, nil
+}
+
+type readCloser struct {
+	io.Reader
+	f *os.File
+}
+
+func (r readCloser) Close() error { return r.f.Close() }
+
+// Compress writes the complete lines of the cast at path (compressed or not;
+// a recording in progress may end in a partial line) to w as one gzip
+// stream, and returns how many uncompressed bytes it wrote.
+func Compress(w io.Writer, path string) (int64, error) {
+	r, err := Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer r.Close()
+	zw, _ := gzip.NewWriterLevel(w, gzip.BestCompression)
+	br := bufio.NewReaderSize(r, 1<<16)
+	var n int64
+	for {
+		line, err := br.ReadBytes('\n')
+		if len(line) > 0 && line[len(line)-1] == '\n' {
+			if _, werr := zw.Write(line); werr != nil {
+				return n, werr
+			}
+			n += int64(len(line))
+		}
+		if err != nil {
+			break // EOF, or a cut-off gzip member of a recording in progress
+		}
+	}
+	return n, zw.Close()
+}
+
 // Read parses a cast. A truncated last line (a recording still being
 // written) is ignored.
 func Read(r io.Reader) (*Cast, error) {
@@ -165,40 +219,12 @@ func Read(r io.Reader) (*Cast, error) {
 	return c, nil
 }
 
-// ReadFile reads a cast file.
+// ReadFile reads a cast file (compressed or not).
 func ReadFile(path string) (*Cast, error) {
-	f, err := os.Open(path)
+	f, err := Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	return Read(f)
-}
-
-// Stat reads only what `wash watch list` shows: the header and the time of the
-// last event (from the file's tail).
-func Stat(path string) (Header, float64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Header{}, 0, err
-	}
-	defer f.Close()
-	var h Header
-	first, err := bufio.NewReader(f).ReadBytes('\n')
-	if err != nil || json.Unmarshal(first, &h) != nil {
-		return h, 0, errors.New("no header")
-	}
-	st, _ := f.Stat()
-	off := max(st.Size()-64<<10, 0)
-	buf := make([]byte, st.Size()-off)
-	_, _ = f.ReadAt(buf, off)
-	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		var raw []json.RawMessage
-		var t float64
-		if json.Unmarshal([]byte(lines[i]), &raw) == nil && len(raw) == 3 && json.Unmarshal(raw[0], &t) == nil {
-			return h, t, nil
-		}
-	}
-	return h, 0, nil
 }

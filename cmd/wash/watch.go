@@ -118,7 +118,7 @@ func recStatus(r manager.RecordingInfo) string {
 		switch {
 		case r.State == "recording":
 			st += ", hosted (snapshot)"
-		case r.Hosted.Size < r.Size:
+		case r.Hosted.Dur < r.Dur:
 			st += ", hosted (updating)"
 		default:
 			st += ", hosted"
@@ -169,7 +169,7 @@ func humanBytes(n int64) string {
 // to any asciicast v2 file. It reads the recordings dir directly, so playing
 // works without washd.
 func recordingFile(arg string) (path, id string, err error) {
-	if strings.ContainsAny(arg, "/.") {
+	if strings.ContainsAny(arg, "/.") { // a file: ID.cast, ID.cast.gz, any asciicast
 		if _, err := os.Stat(arg); err == nil {
 			return arg, filepath.Base(arg), nil
 		}
@@ -179,7 +179,7 @@ func recordingFile(arg string) (path, id string, err error) {
 		return "", "", err
 	}
 	for _, e := range ents {
-		name, ok := strings.CutSuffix(e.Name(), ".cast")
+		name, ok := strings.CutSuffix(strings.TrimSuffix(e.Name(), ".gz"), ".cast")
 		if !ok || !strings.HasPrefix(name, arg) || len(arg) < 3 && name != arg {
 			continue
 		}

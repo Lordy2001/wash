@@ -20,8 +20,9 @@ import (
 
 // Published recordings (`wash watch host`). washd uploads an asciicast over
 // its link; anyone with the link can watch it at /playback/UUID (the UUID is
-// the only secret). Files live in Config.PlaybackDir as UUID.cast with a
-// UUID.json sidecar naming the user that owns it.
+// the only secret). Files live in Config.PlaybackDir as UUID.cast.gz (or
+// UUID.cast from an older washd) with a UUID.json sidecar naming the user
+// that owns it.
 
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
@@ -147,9 +148,14 @@ func (s *Server) playbackPut(user string, data json.RawMessage) (any, error) {
 	if err := os.WriteFile(s.playbackPath(ch.UUID, ".json.tmp"), mb, 0o600); err != nil {
 		return abort(err)
 	}
-	if err := os.Rename(up.f.Name(), s.playbackPath(ch.UUID, ".cast")); err != nil {
+	ext, other := ".cast", ".cast.gz"
+	if ch.Gzip {
+		ext, other = other, ext
+	}
+	if err := os.Rename(up.f.Name(), s.playbackPath(ch.UUID, ext)); err != nil {
 		return abort(err)
 	}
+	_ = os.Remove(s.playbackPath(ch.UUID, other))
 	if err := os.Rename(s.playbackPath(ch.UUID, ".json.tmp"), s.playbackPath(ch.UUID, ".json")); err != nil {
 		return nil, err
 	}
@@ -178,8 +184,10 @@ func (s *Server) playbackDel(user string, data json.RawMessage) (any, error) {
 		return nil, errors.New("not your playback")
 	}
 	_ = os.Remove(s.playbackPath(ref.UUID, ".json")) // first: the page 404s at once
-	if err := os.Remove(s.playbackPath(ref.UUID, ".cast")); err != nil && !os.IsNotExist(err) {
-		return nil, err
+	for _, ext := range []string{".cast.gz", ".cast"} {
+		if err := os.Remove(s.playbackPath(ref.UUID, ext)); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
 	}
 	log.Printf("playback %s removed by %s", ref.UUID, user)
 	return struct{}{}, nil
@@ -211,6 +219,7 @@ func RemovePlaybacks(dir, user string) int {
 		}
 		os.Remove(filepath.Join(dir, uuid+".json"))
 		os.Remove(filepath.Join(dir, uuid+".cast"))
+		os.Remove(filepath.Join(dir, uuid+".cast.gz"))
 		n++
 	}
 	return n
@@ -241,7 +250,12 @@ func (s *Server) handlePlaybackCast(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such recording", http.StatusNotFound)
 		return
 	}
-	f, err := os.Open(s.playbackPath(uuid, ".cast"))
+	gz := true
+	f, err := os.Open(s.playbackPath(uuid, ".cast.gz"))
+	if err != nil {
+		gz = false
+		f, err = os.Open(s.playbackPath(uuid, ".cast"))
+	}
 	if err != nil {
 		http.Error(w, "no such recording", http.StatusNotFound)
 		return
@@ -252,13 +266,25 @@ func (s *Server) handlePlaybackCast(w http.ResponseWriter, r *http.Request) {
 	h.Set("Cache-Control", "no-cache")
 	h.Set("Content-Disposition", `inline; filename="`+uuid[:8]+`.cast"`)
 	h.Set("Vary", "Accept-Encoding")
-	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+	acceptsGzip := strings.Contains(r.Header.Get("Accept-Encoding"), "gzip")
+	switch {
+	case gz && acceptsGzip: // stored compressed: send as is
 		h.Set("Content-Encoding", "gzip")
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
-		_, _ = io.Copy(gz, f)
-		return
+		_, _ = io.Copy(w, f)
+	case gz:
+		zr, err := gzip.NewReader(f)
+		if err != nil {
+			http.Error(w, "bad recording", http.StatusInternalServerError)
+			return
+		}
+		_, _ = io.Copy(w, zr)
+	case acceptsGzip:
+		h.Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		defer zw.Close()
+		_, _ = io.Copy(zw, f)
+	default:
+		st, _ := f.Stat()
+		http.ServeContent(w, r, "", st.ModTime(), f)
 	}
-	st, _ := f.Stat()
-	http.ServeContent(w, r, "", st.ModTime(), f)
 }
