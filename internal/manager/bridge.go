@@ -2,6 +2,7 @@ package manager
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"time"
 
@@ -95,17 +96,100 @@ func dialDaemon(ctx context.Context, signal signalFunc, offer wosh.Msg, onMsg fu
 }
 
 // warmStart makes the daemon start its shell (it does so on the first
-// offer), then disconnects; the session keeps running.
+// offer), then disconnects; the session keeps running. Until the shell's
+// startup output settles, washd stands in for the terminal and answers the
+// primary device attributes query (ESC [ c): fish and other programs send
+// it at startup and wait for the answer (fish warns after 2 s without one).
 func warmStart(ctx context.Context, s *Session, offer wosh.Msg, signal signalFunc) error {
 	offer.ICE, offer.Relay = nil, false // same host
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	pc, _, err := dialDaemon(ctx, signal, offer, nil, nil)
+	frames := make(chan []byte, 64)
+	done := make(chan struct{})
+	defer close(done)
+	pc, dc, err := dialDaemon(ctx, signal, offer, func(p []byte) {
+		select {
+		case frames <- append([]byte(nil), p...):
+		case <-done:
+		}
+	}, nil)
 	if err != nil {
 		return err
 	}
-	time.Sleep(100 * time.Millisecond)
+	answerStartup(dc, frames, warmFirst, warmQuiet, warmMax)
 	return pc.Close()
+}
+
+const (
+	warmFirst = 2 * time.Second        // wait this long for the shell's first output
+	warmQuiet = 300 * time.Millisecond // then until output pauses this long
+	warmMax   = 4 * time.Second        // at most
+	da1Reply  = "\x1b[?62;22c"         // what the browser terminal answers (VT220, ANSI colour)
+)
+
+// answerStartup answers DA1 queries in the session output until it is quiet.
+func answerStartup(dc interface{ Send([]byte) error }, frames <-chan []byte, first, quiet, maxWait time.Duration) {
+	var inOff uint64
+	var tail []byte
+	idle := time.NewTimer(first)
+	defer idle.Stop()
+	deadline := time.After(maxWait)
+	for {
+		select {
+		case <-idle.C:
+			return
+		case <-deadline:
+			return
+		case b := <-frames:
+			if len(b) < 9 {
+				continue
+			}
+			off := binary.BigEndian.Uint64(b[1:9])
+			switch b[0] {
+			case wosh.FAck:
+				inOff = max(inOff, off)
+			case wosh.FOutput:
+				buf := append(tail, b[9:]...)
+				for n := countDA1(buf, len(tail)); n > 0; n-- {
+					if dc.Send(inputFrame(inOff, da1Reply)) == nil {
+						inOff += uint64(len(da1Reply))
+					}
+				}
+				tail = append([]byte(nil), buf[max(len(buf)-3, 0):]...)
+				idle.Reset(quiet)
+			}
+		}
+	}
+}
+
+// countDA1 counts DA1 queries (ESC [ c, ESC [ 0 c) in buf that end after
+// the first skip bytes (those were already seen).
+func countDA1(buf []byte, skip int) int {
+	n := 0
+	for i := 0; i+2 < len(buf); i++ {
+		if buf[i] != 0x1b || buf[i+1] != '[' {
+			continue
+		}
+		end := -1
+		switch {
+		case buf[i+2] == 'c':
+			end = i + 3
+		case buf[i+2] == '0' && i+3 < len(buf) && buf[i+3] == 'c':
+			end = i + 4
+		}
+		if end > skip {
+			n++
+		}
+	}
+	return n
+}
+
+func inputFrame(off uint64, data string) []byte {
+	b := make([]byte, 9+len(data))
+	b[0] = wosh.FInput
+	binary.BigEndian.PutUint64(b[1:], off)
+	copy(b[9:], data)
+	return b
 }
 
 // hangUp connects as a wosh peer and sends FKill (sessions on other hosts).
