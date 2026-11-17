@@ -44,6 +44,7 @@ export class Terminal {
   constructor(container, options = {}) {
     this.opts = {
       fontFamily: DEFAULT_FONT, fontSize: 15, scrollback: 5000, copyOnSelect: false, ctrlCopyPaste: false,
+      clipboard: true, // OSC 52 from the program may set the clipboard (off for playback)
       ...options,
       theme: { ...DEFAULT_THEME, ...(options.theme || {}) },
     };
@@ -60,7 +61,9 @@ export class Terminal {
     s.onReply = (str) => this._emit(str);
     s.onTitle = (t) => this.onTitle && this.onTitle(t);
     s.onBell = () => this.onBell && this.onBell();
-    s.onClipboard = (text) => { navigator.clipboard?.writeText(text).catch(() => {}); };
+    s.onClipboard = (text) => {
+      if (this.opts.clipboard) navigator.clipboard?.writeText(text).catch(() => {});
+    };
     s.onImage = () => this._schedule();
 
     this.renderer = new CanvasRenderer(container, s, { fontFamily: this.opts.fontFamily, fontSize: this.opts.fontSize });

@@ -307,10 +307,14 @@ func (p *player) size() {
 	fmt.Fprint(p.out, "\x1b[2J")
 }
 
-// readKeys sends key presses (an escape sequence is one key).
+// readKeys sends key presses (an escape sequence is one key). Strings the
+// terminal sends on its own (OSC/DCS/APC replies, e.g. to a colour or
+// clipboard query in a raw playback) are dropped, so their bytes never act
+// as keys.
 func readKeys(ch chan<- string) {
 	defer close(ch)
-	buf := make([]byte, 64)
+	buf := make([]byte, 256)
+	inString, esc := false, false // inside a terminal reply string; its last byte was ESC
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
@@ -318,6 +322,21 @@ func readKeys(ch chan<- string) {
 		}
 		s := string(buf[:n])
 		for s != "" {
+			if inString {
+				c := s[0]
+				s = s[1:]
+				switch {
+				case c == 0x07 || esc && c == '\\':
+					inString, esc = false, false
+				default:
+					esc = c == 0x1b
+				}
+				continue
+			}
+			if s[0] == 0x1b && len(s) >= 2 && strings.IndexByte("]P_^", s[1]) >= 0 {
+				inString, esc, s = true, false, s[2:]
+				continue
+			}
 			k := s[:1]
 			if s[0] == 0x1b && len(s) >= 3 && (s[1] == '[' || s[1] == 'O') {
 				i := 2
@@ -333,6 +352,55 @@ func readKeys(ch chan<- string) {
 			s = s[len(k):] // an SS3 key was rewritten to CSI of the same length
 		}
 	}
+}
+
+// osc52Filter drops OSC 52 (clipboard) sequences from recorded output, so
+// playing a recording never sets or reads this machine's clipboard. A
+// sequence may be split across events.
+type osc52Filter struct {
+	in   bool   // inside an OSC 52
+	esc  bool   // ...and its last byte was ESC
+	hold string // a possible start of one at the end of the last chunk
+}
+
+const osc52 = "\x1b]52;"
+
+func (f *osc52Filter) filter(s string) string {
+	s = f.hold + s
+	f.hold = ""
+	var out strings.Builder
+	for s != "" {
+		if f.in {
+			i := 0
+			for ; i < len(s); i++ {
+				c := s[i]
+				if c == 0x07 || f.esc && c == '\\' {
+					f.in, f.esc = false, false
+					break
+				}
+				f.esc = c == 0x1b
+			}
+			s = s[min(i+1, len(s)):]
+			continue
+		}
+		i := strings.Index(s, osc52)
+		if i < 0 {
+			// keep a tail that may begin an OSC 52 for the next chunk
+			for k := min(len(osc52)-1, len(s)); k > 0; k-- {
+				if strings.HasPrefix(osc52, s[len(s)-k:]) {
+					f.hold = s[len(s)-k:]
+					s = s[:len(s)-k]
+					break
+				}
+			}
+			out.WriteString(s)
+			break
+		}
+		out.WriteString(s[:i])
+		f.in, f.esc = true, false
+		s = s[i+len(osc52):]
+	}
+	return out.String()
 }
 
 // Styles (256 colours: work on any modern terminal).
@@ -487,6 +555,7 @@ func (p *player) runRaw() error {
 	keys := make(chan string, 16)
 	go readKeys(keys)
 	p.timeline()
+	var clip osc52Filter
 	paused := false
 	start := time.Now()
 	base := 0.0 // position when start was taken
@@ -508,7 +577,7 @@ func (p *player) runRaw() error {
 				paused = !paused
 			case k == "." && paused:
 				if e.Type == "o" {
-					_, _ = io.WriteString(p.out, e.Data)
+					_, _ = io.WriteString(p.out, clip.filter(e.Data))
 				}
 				i++
 			}
@@ -516,7 +585,7 @@ func (p *player) runRaw() error {
 		case <-time.After(max(wait, 0)):
 		}
 		if e.Type == "o" {
-			_, _ = io.WriteString(p.out, e.Data)
+			_, _ = io.WriteString(p.out, clip.filter(e.Data))
 		}
 		i++
 	}

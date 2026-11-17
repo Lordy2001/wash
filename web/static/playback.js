@@ -9,7 +9,10 @@ const player = $('player');
 const castURL = location.pathname.replace(/\/+$/, '') + '/cast';
 const SPEEDS = [0.25, 0.5, 1, 1.5, 2, 3, 4, 8, 16];
 
-const term = new Terminal($('term'), { fontSize: 15 });
+// clipboard: false: a recorded OSC 52 (e.g. a yank in vim or tmux) must not
+// set the viewer's clipboard
+// ctrlCopyPaste: Ctrl+C copies the selected text
+const term = new Terminal($('term'), { fontSize: 15, clipboard: false, ctrlCopyPaste: true });
 if (term.textarea) { term.textarea.readOnly = true; term.textarea.inputMode = 'none'; }
 term.onData = null;
 
@@ -138,7 +141,22 @@ track.addEventListener('pointerleave', () => { $('tip').hidden = true; });
 
 $('pp').onclick = toggle;
 $('big-play').onclick = play;
-$('stage').addEventListener('click', (e) => { if (e.target.closest('#big-play') == null && !window.getSelection().toString()) toggle(); });
+// A click on the screen plays/pauses; a drag or double click selects text
+// instead (the terminal's own selection, not the page's).
+let downAt = null, clickTimer = 0;
+$('stage').addEventListener('pointerdown', (e) => {
+  downAt = { x: e.clientX, y: e.clientY, sel: !!term.getSelection() };
+}, true);
+$('stage').addEventListener('click', (e) => {
+  if (e.target.closest('#big-play')) return;
+  const moved = downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4;
+  clearTimeout(clickTimer);
+  // drag-select, the 2nd/3rd click of a word/line select, or a click that
+  // only clears a selection
+  if (moved || e.detail > 1 || downAt?.sel) return;
+  clickTimer = setTimeout(() => { if (!term.getSelection()) toggle(); }, 250);
+});
+$('stage').addEventListener('dblclick', () => clearTimeout(clickTimer));
 $('speed').onclick = (e) => setSpeed(e.shiftKey ? speed - 1 : (speed + 1) % SPEEDS.length);
 $('idle').onclick = toggleIdle;
 $('fs').onclick = () => (document.fullscreenElement ? document.exitFullscreen() : player.requestFullscreen()).catch(() => {});
