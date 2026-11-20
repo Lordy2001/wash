@@ -43,10 +43,39 @@ test('an old daemon (no out) or a resume past the end: everything answers', asyn
   ws.frame(output(0, 'x\x1b[5n'));
   assert.deepEqual(writes, [['x\x1b[5n', true]]);
 
-  ws.linkDown = () => {}; // reconnect by hand: a new link resets the boundary
+  ws.linkDown = () => {}; // reconnect by hand
   await ws.connect();
   ws.stopPing();
   ws.frame(control({ op: 'info', out: 5 })); // resumed at rx_out 5: nothing to replay
   ws.frame(output(5, 'y'));
   assert.deepEqual(writes.at(-1), ['y', true]);
+});
+
+test('a resume answers output made while the link was down', async () => {
+  const { ws, writes } = await session();
+  ws.frame(control({ op: 'info', out: 8 }));
+  ws.frame(output(0, 'abcd')); // the link drops halfway through the replay
+  ws.linkDown = () => {};
+  await ws.connect();
+  ws.stopPing();
+  // resumed at rx_out 4; 8..12 is a query the program sent while we were away
+  ws.frame(control({ op: 'info', out: 12 }));
+  ws.frame(output(4, 'efgh\x1b[5nxyz'));
+  assert.deepEqual(writes, [['abcd', false], ['efgh', false], ['\x1b[5nxyz', true]]);
+});
+
+test('replayed signals are dropped, except hellos', async () => {
+  const { ws } = await session();
+  const osc = (m) => '\x1b]5379;wosh;' + Buffer.from(JSON.stringify(m)).toString('base64') + '\x07';
+  const signals = [];
+  ws.onSignal = (m) => signals.push(m.t);
+  let answered = null;
+  ws.waiters.set('h1', (m) => { answered = m; });
+  const old = osc({ t: 'typeahead', id: 'h1', text: 'bHMK' }) + osc({ t: 'answer', id: 'h1', sdp: 'old' }) + osc({ t: 'hello', id: 'h2' });
+  ws.frame(control({ op: 'info', out: enc.encode(old).length }));
+  ws.frame(output(0, old));
+  assert.deepEqual(signals, ['hello']);
+  assert.equal(answered, null, 'an old answer does not resolve a new offer');
+  ws.frame(output(enc.encode(old).length, osc({ t: 'answer', id: 'h1', sdp: 'new' })));
+  assert.equal(answered.sdp, 'new');
 });

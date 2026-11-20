@@ -246,3 +246,20 @@ test('write with replies: false draws but does not answer queries', async () => 
   assert.deepEqual(sent, ['\x1b[0n'], 'live queries are answered');
   t.dispose();
 });
+
+test('write with replies: false does not set the clipboard (OSC 52)', () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const copied = [];
+  const nav = globalThis.navigator;
+  Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async (s) => { copied.push(s); } } }, configurable: true });
+  try {
+    t.write('\x1b]52;c;b2xk\x07', { replies: false });
+    assert.deepEqual(copied, [], 'a replayed yank leaves the clipboard alone');
+    t.write('\x1b]52;c;bmV3\x07');
+    assert.deepEqual(copied, ['new'], 'a live yank sets it');
+  } finally {
+    Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true });
+    t.dispose();
+  }
+});

@@ -395,7 +395,11 @@ export class WoshSession {
     this.synced = false;        // got this link's first ack
     this.everSynced = false;
     this.rxOut = 0;              // output received up to
-    this.replayEnd = 0;          // output below this offset is replay (no query replies)
+    // output below this offset was in the ring before this tab first
+    // connected: replay (no query replies). Set once, by the first info
+    // frame on a link that starts at rx_out 0, and kept across reconnects.
+    this.replayEnd = 0;
+    this.replayKnown = false;
     this.inBase = 0;             // input acknowledged up to
     this.inBuf = new Uint8Array(0); // unacknowledged input, starting at inBase
     this.tr = null; this.closed = false; this.exited = false;
@@ -419,7 +423,6 @@ export class WoshSession {
       this.onState({ state: 'connecting' });
       try {
         this.synced = false; this.flushPending = true;
-        this.replayEnd = 0; // set by this link's info frame (newer daemons)
         this.tr = await this.open();
         this.take = false; // reconnects keep whatever role we have
         // the first ack may have arrived while open() was finishing
@@ -564,15 +567,18 @@ export class WoshSession {
         if (end <= this.rxOut) return;
         if (off < this.rxOut) data = data.subarray(this.rxOut - off);
         this.rxOut = end;
-        // output below replayEnd was produced before this link: its terminal
-        // queries were answered back then, so draw it without replying
+        // output below replayEnd was in the ring before this tab connected:
+        // its terminal queries were answered back then, so draw it without
+        // replying. Output made while a resumed link was down still answers.
         const quiet = Math.max(0, Math.min(this.replayEnd - (end - data.length), data.length));
         const msgs = [];
         for (const [part, replies] of [[data.subarray(0, quiet), false], [data.subarray(quiet), true]]) {
           if (!part.length) continue;
           const r = this.filter.write(part);
           if (r.out.length) this.term.write(r.out, { replies });
-          msgs.push(...r.msgs);
+          // replayed signals are stale (answers to old offers, typeahead that
+          // was delivered then); only a hello can matter (a relay still parked)
+          for (const m of r.msgs) if (replies || m.t === 'hello') msgs.push(m);
         }
         for (const m of msgs) {
           if ((m.t === 'answer' || m.t === 'err') && this.waiters.has(m.id)) this.waiters.get(m.id)(m);
@@ -584,7 +590,11 @@ export class WoshSession {
         try {
           const c = JSON.parse(new TextDecoder().decode(b.subarray(1)));
           if (c.op === 'info' && c.token) this.token = c.token;
-          if (c.op === 'info' && c.out > 0) this.replayEnd = c.out;
+          // info comes before any output on a link, so rxOut is where it starts
+          if (c.op === 'info' && this.rxOut === 0 && !this.replayKnown) {
+            this.replayKnown = true;
+            if (c.out > 0) this.replayEnd = c.out;
+          }
           if (c.op === 'role') this.setRole(c.role);
           if (c.op === 'size' && c.cols > 0 && c.rows > 0) { this.shared = { cols: c.cols, rows: c.rows }; this.layout(); }
         } catch {}
