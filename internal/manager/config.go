@@ -56,9 +56,8 @@ type Config struct {
 	// ForwardAgent: washd's route ssh forwards the user's agent through
 	// intermediate hops (so a hop can use local keys for the next ssh).
 	ForwardAgent bool `json:"forward_agent,omitempty"`
-	// Hosts: ssh hosts new sessions may start on (nil = the Host aliases in
-	// ~/.ssh/config; empty = this host only).
-	Hosts []string `json:"hosts"`
+	// Hosts: ssh hosts new sessions may also start on (none by default).
+	Hosts []string `json:"hosts,omitempty"`
 }
 
 // ConfigKeys documents the keys `wash config set` accepts.
@@ -71,7 +70,7 @@ var ConfigKeys = map[string]string{
 	"transport":     "auto | webrtc | bridge (bridge = through washd over the WebSocket)",
 	"max_sessions":  "maximum concurrent sessions",
 	"term":          "TERM for new sessions",
-	"hosts":         "ssh hosts new sessions can start on, comma separated; 'ssh' = the Host aliases in ~/.ssh/config (default), 'none' = this host only",
+	"hosts":         "ssh hosts new sessions can also start on, comma separated (ssh destinations, e.g. Host aliases); 'none' = this host only (default)",
 	"forward_agent": "true: washd's ssh routes forward your agent through intermediate hops (root there can use it meanwhile)",
 }
 
@@ -207,9 +206,6 @@ func (c Config) Get(key string) (string, error) {
 	case "forward_agent":
 		return strconv.FormatBool(c.ForwardAgent), nil
 	case "hosts":
-		if c.Hosts == nil {
-			return "ssh: " + strings.Join(sshConfigHosts(), ","), nil
-		}
 		return strings.Join(c.Hosts, ","), nil
 	}
 	return "", fmt.Errorf("unknown key %q", key)
@@ -305,12 +301,10 @@ func (c *Config) Set(key, val string) error {
 		c.ForwardAgent = b
 	case "hosts":
 		switch val {
-		case "ssh", "":
+		case "none", "":
 			c.Hosts = nil
-		case "none":
-			c.Hosts = []string{}
 		default:
-			hs := []string{}
+			var hs []string
 			for _, h := range strings.FieldsFunc(val, func(r rune) bool { return r == ',' || r == ' ' }) {
 				if !validHost(h) {
 					return fmt.Errorf("bad host %q", h)

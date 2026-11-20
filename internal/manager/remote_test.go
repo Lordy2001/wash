@@ -139,18 +139,6 @@ func TestDecidePush(t *testing.T) {
 	}
 }
 
-func TestSSHConfigHosts(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	_ = os.MkdirAll(filepath.Join(home, ".ssh", "conf.d"), 0o700)
-	_ = os.WriteFile(filepath.Join(home, ".ssh", "config"), []byte(
-		"Include conf.d/*\nHost ca ca-prox\n  HostName x\nHost *.lan !bad\nhost=mini\nHost ca\n"), 0o600)
-	_ = os.WriteFile(filepath.Join(home, ".ssh", "conf.d", "w"), []byte("Host work\n"), 0o600)
-	if got := strings.Join(sshConfigHosts(), ","); got != "work,ca,mini" {
-		t.Fatalf("hosts %q", got)
-	}
-}
-
 // TestNewRemoteReal starts a session on a real ssh host:
 // WASH_TEST_HOST=myhost go test ./internal/manager -run Real
 func TestNewRemoteReal(t *testing.T) {

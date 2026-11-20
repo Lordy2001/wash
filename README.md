@@ -313,11 +313,10 @@ right lists this host and washd's ssh hosts, and **+** starts a session on the
 selected one; `wash sessions new --host HOST` does the same from the CLI. Tabs for other hosts are named after the host (`ca`, `ca 2`, ...),
 and switching servers is switching tabs.
 
-* **Which hosts.** By default, the first alias of every `Host` line in
-  `~/.ssh/config` (and files it `Include`s), skipping patterns.
-  `wash config set hosts ca,ca-mini` picks them instead, `ssh` goes back to
-  the default, and `none` turns this off. The browser can only name a host
-  on that list, so it cannot pass ssh options of its own.
+* **Which hosts.** None until you list them: `wash config set hosts ca,ca-mini`
+  (ssh destinations, e.g. `Host` aliases from `~/.ssh/config`); `none` empties
+  the list again. The browser can only name a host on that list, so it cannot
+  pass ssh options of its own.
 * **How.** washd runs `ssh -T -o BatchMode=yes HOST` with wosh's push stub,
   the way `wosh HOST` starts a session: it uses a protocol-compatible wosh
   installed there (PATH, `~/bin`, `~/.local/bin`, `~/go/bin`), or else runs its

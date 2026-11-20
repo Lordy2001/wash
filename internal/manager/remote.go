@@ -1,13 +1,9 @@
 package manager
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"wash/internal/wosh"
@@ -22,64 +18,12 @@ import (
 // chained hop with a one-hop route. The browser then connects to that
 // daemon directly over WebRTC, or through washd's bridge.
 //
-// Only hosts on washd's list can be chosen (`wash config set hosts`; by
-// default the Host aliases in ~/.ssh/config), so a browser cannot pass ssh
-// options of its own.
+// Only hosts on washd's list can be chosen (`wash config set hosts`; empty
+// by default), so a browser cannot pass ssh options of its own.
 
-// Hosts lists the ssh hosts a new session may start on.
-func (c Config) hosts() []string {
-	if c.Hosts != nil {
-		return c.Hosts
-	}
-	return sshConfigHosts()
-}
-
-// sshConfigHosts reads the first alias of every Host line in ~/.ssh/config
-// (and files it Includes from ~/.ssh), skipping patterns.
-func sshConfigHosts() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	var out []string
-	var read func(path string, depth int)
-	read = func(path string, depth int) {
-		f, err := os.Open(path)
-		if err != nil || depth > 4 {
-			return
-		}
-		defer f.Close()
-		sc := bufio.NewScanner(f)
-		for sc.Scan() {
-			fields := strings.Fields(strings.ReplaceAll(sc.Text(), "=", " "))
-			if len(fields) < 2 || strings.HasPrefix(fields[0], "#") {
-				continue
-			}
-			switch strings.ToLower(fields[0]) {
-			case "include":
-				for _, pat := range fields[1:] {
-					if !filepath.IsAbs(pat) {
-						pat = filepath.Join(home, ".ssh", strings.TrimPrefix(pat, "~/"))
-					}
-					ms, _ := filepath.Glob(pat)
-					for _, m := range ms {
-						read(m, depth+1)
-					}
-				}
-			case "host":
-				h := fields[1]
-				if strings.ContainsAny(h, "*?!") || !validHost(h) || seen[h] {
-					continue
-				}
-				seen[h] = true
-				out = append(out, h)
-			}
-		}
-	}
-	read(filepath.Join(home, ".ssh", "config"), 0)
-	return out
-}
+// hosts lists the ssh hosts a new session may start on: only the ones the
+// user listed (`wash config set hosts`); none by default.
+func (c Config) hosts() []string { return c.Hosts }
 
 func (m *Manager) allowedHost(host string) bool {
 	if !validHost(host) {
