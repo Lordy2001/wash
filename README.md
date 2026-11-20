@@ -357,7 +357,7 @@ Ctrl+Shift+T opens a new session, Ctrl+Shift+PgUp/PgDn switch tabs.
 Another web app can use the terminal and the wosh client without wash-web or
 washd. Copy `web/static/wosh.js` and `web/static/term/` as they are: plain ES
 modules with relative imports only, no dependencies, no build step. Both
-export the same `VERSION`; record it (and the commit) when you vendor them.
+export the same `VERSION`. Record it, and the commit, when you vendor them.
 
 ```js
 import { Terminal } from './term/index.js';
@@ -365,21 +365,26 @@ import { WoshSession } from './wosh.js';
 
 const term = new Terminal(el, { fontSize: 14 });
 const s = new WoshSession(null, sessionId, term, {
-  cid,                       // this tab, stable across reconnects (roles)
-  signal: async ({ sdp, cols, rows, rx_out, cid, take }) => {
-    // your server writes {"t":"offer",...} to the daemon's control socket
-    const r = await fetch(`/api/term/${sessionId}/offer`, { method: 'POST', body: JSON.stringify({ sdp, cols, rows, rx_out, cid, take }) });
+  cid,                       // this tab, kept across reloads (sessionStorage) so it keeps control
+  signal: async (offer) => { // {sdp, cols, rows, rx_out, cid, take, join, ice, relay}
+    // your server writes {"t":"offer", key, sdp, cols, rows, rx_out, cid, join, ice, relay}
+    // to the daemon's control socket: the daemon reads join, not take
+    const r = await fetch(`/api/term/${sessionId}/offer`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(offer),
+    });
     if (r.status === 404) throw new Error('session gone'); // ends the session
+    if (!r.ok) throw new Error(`offer failed (${r.status})`); // retried
     return (await r.json()).sdp;
   },
-  ice: [],                   // default: host candidates only
+  ice: [],                   // default: host candidates only. relay: true for TURN only
   onState: (st) => {}, onExit: (code, why) => {},
 });
 s.connect();
 ```
 
 Without a manager the transport is WebRTC only, and chained hops and the
-build streams they need are not available.
+build streams they need are not available. The signal function times out
+after 30 s and is then retried.
 
 ## Tests
 

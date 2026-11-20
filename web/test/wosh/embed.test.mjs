@@ -20,25 +20,67 @@ test('signal option: offers go to the embedder, with cid and size', async () => 
   assert.deepEqual(ws.iceConfig(), { ice: [], relay: false }, 'host candidates only by default');
   const sdp = await ws.signal('OFFER-SDP');
   assert.equal(sdp, 'ANSWER-SDP');
-  assert.deepEqual(offers, [{ sdp: 'OFFER-SDP', cols: 100, rows: 30, rx_out: 0, cid: 'tab9', take: false }]);
+  // join is what the daemon reads; ice and relay so it uses the same servers
+  assert.deepEqual(offers, [{ sdp: 'OFFER-SDP', cols: 100, rows: 30, rx_out: 0, cid: 'tab9', take: false, join: true, ice: [], relay: false }]);
+  ws.take = true;
+  await ws.signal('OFFER-SDP');
+  assert.equal(offers[1].take, true);
+  assert.equal(offers[1].join, false);
 });
 
 test('signal option: embedder ICE servers win, and a "gone" error ends the session', async () => {
   const ice = [{ urls: ['turn:example.invalid'], username: 'u', credential: 'p' }];
   let exit = null;
   const ws = new WoshSession(null, 'abc', { write() {} }, {
-    ice,
+    ice, relay: true,
     signal: async () => { throw new Error('session gone'); },
     onExit: (code, why) => { exit = why; },
   });
-  assert.deepEqual(ws.iceConfig().ice, ice);
+  assert.deepEqual(ws.iceConfig(), { ice, relay: true });
+  assert.equal(typeof ws.relay, 'function', 'the relay option must not hide relay() (chained hops)');
   ws.open = async () => { await ws.signal('x'); };
   await ws.connect();
   assert.equal(exit, 'session gone');
 });
 
+test('embedder ICE servers win over washd\'s, with their own relay flag', () => {
+  const ice = [{ urls: ['stun:example.invalid'] }];
+  const mgr = { cid: 'tab1', hello: { ice: [{ urls: ['turn:washd.invalid'] }], relay: true } };
+  const term = { write() {} };
+  assert.deepEqual(new WoshSession(mgr, 'abc', term, { ice }).iceConfig(), { ice, relay: false });
+  assert.deepEqual(new WoshSession(mgr, 'abc', term).iceConfig(), { ice: mgr.hello.ice, relay: true });
+});
+
+test('signal option: a non-Error rejection or no answer still fails cleanly', async () => {
+  let exit = null;
+  const ws = new WoshSession(null, 'abc', { write() {} }, {
+    signal: async () => { throw 'session gone'; }, // eslint-disable-line no-throw-literal
+    onExit: (code, why) => { exit = why; },
+  });
+  ws.open = async () => { await ws.signal('x'); };
+  await ws.connect();
+  assert.equal(exit, 'session gone');
+
+  for (const bad of [() => Promise.reject(), async () => undefined, async () => ({ sdp: 'X' })]) {
+    const w = new WoshSession(null, 'abc', { write() {} }, { signal: bad });
+    await assert.rejects(w.signal('x'), (e) => e instanceof Error && typeof e.message === 'string');
+  }
+});
+
+test('close() while connecting drops the link that came up', async () => {
+  let closed = 0;
+  const ws = new WoshSession(null, 'abc', { write() {} }, { signal: async () => 'x' });
+  ws.open = async () => { ws.close(); return { kind: 'webrtc', send() {}, close() { closed++; } }; };
+  await ws.connect();
+  assert.equal(closed, 1);
+  assert.equal(ws.tr, null);
+  assert.equal(ws.pingTimer, null);
+});
+
 test('a session needs a manager or a signal function', () => {
   assert.throws(() => new WoshSession(null, 'abc', { write() {} }), /signal/);
+  const ac = { aborted: false }; // e.g. an AbortSignal passed as `signal`
+  assert.throws(() => new WoshSession(null, 'abc', { write() {} }, { signal: ac }), /signal must be a function/);
 });
 
 test('one version for wosh.js and term/', () => {
@@ -51,7 +93,12 @@ test('vendorable files only import each other (no build step)', () => {
   const files = ['wosh.js', ...readdirSync(staticDir + 'term').filter((f) => f.endsWith('.js')).map((f) => 'term/' + f)];
   for (const f of files) {
     const src = readFileSync(staticDir + f, 'utf8');
-    for (const m of src.matchAll(/(?:^|\n)\s*(?:import|export)\b[^'"\n]*?from\s*['"]([^'"]+)['"]/g)) {
+    // import/export ... from '...' (also over several lines), and import '...'
+    const specs = [
+      ...src.matchAll(/(?:^|\n)\s*(?:import|export)\b[^;'"]*?\bfrom\s*['"]([^'"]+)['"]/g),
+      ...src.matchAll(/(?:^|\n)\s*import\s*['"]([^'"]+)['"]/g),
+    ];
+    for (const m of specs) {
       const spec = m[1];
       assert.ok(spec.startsWith('./') || spec.startsWith('../'), `${f} imports ${spec}`);
       if (f.startsWith('term/')) assert.ok(spec.startsWith('./'), `${f} reaches outside term/: ${spec}`);

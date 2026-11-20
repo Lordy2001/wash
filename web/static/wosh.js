@@ -20,6 +20,7 @@ export const F = {
 };
 
 const MAX_CHUNK = 16 * 1024;
+const SIGNAL_TIMEOUT = 30000; // an embedder's signal function, like washd requests
 const enc = new TextEncoder();
 
 function u64(view, at) { return Number(view.getBigUint64(at)); }
@@ -320,7 +321,7 @@ export function serveStream(mgr, dc) {
 
 // signal(sdp) -> answer sdp: through washd for its own sessions, through the
 // parent session's terminal for a chained hop, or through the embedder.
-// ice: [{urls, username, credential}]; relay: TURN only.
+// ice: [{urls, username, credential}]. relay: TURN only.
 async function webrtcTransport(mgr, { ice, relay }, signal, onFrame, onDown) {
   const cfg = { iceServers: (ice || []).map((s) => ({ urls: s.urls, username: s.username, credential: s.credential })) };
   if (relay) cfg.iceTransportPolicy = 'relay';
@@ -337,9 +338,10 @@ async function webrtcTransport(mgr, { ice, relay }, signal, onFrame, onDown) {
     const t = setTimeout(resolve, 4000);
     pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); resolve(); } });
   });
-  let answer;
-  try { answer = await signal(pc.localDescription.sdp); } catch (e) { pc.close(); throw e; }
-  await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+  try {
+    const answer = await signal(pc.localDescription.sdp);
+    await pc.setRemoteDescription({ type: 'answer', sdp: answer });
+  } catch (e) { pc.close(); throw e; }
   await new Promise((resolve, reject) => {
     const t = setTimeout(() => { reject(new Error('WebRTC did not connect')); }, 8000);
     dc.onopen = () => { clearTimeout(t); resolve(); };
@@ -360,7 +362,7 @@ async function webrtcTransport(mgr, { ice, relay }, signal, onFrame, onDown) {
   };
 }
 
-async function bridgeTransport(mgr, id, size, rxOut, take, onFrame, onDown) {
+async function bridgeTransport(mgr, id, size, rxOut, cid, take, onFrame, onDown) {
   const { ticket } = await mgr.request({ t: 'ticket' });
   const { ws } = await openSocket(ticket, mgr.host);
   let down = false;
@@ -372,7 +374,7 @@ async function bridgeTransport(mgr, id, size, rxOut, take, onFrame, onDown) {
       else if (m.t === 'err') reject(new Error(m.err));
     };
     ws.onclose = (ev) => reject(new Error(ev.reason || 'bridge closed'));
-    ws.send(JSON.stringify({ t: 'bridge', rid: 1, id, cols: size.cols, rows: size.rows, rx_out: rxOut, cid: mgr.cid, take }));
+    ws.send(JSON.stringify({ t: 'bridge', rid: 1, id, cols: size.cols, rows: size.rows, rx_out: rxOut, cid, take }));
   });
   ws.onmessage = (ev) => { if (typeof ev.data !== 'string') onFrame(new Uint8Array(ev.data)); };
   ws.onclose = () => { if (!down) { down = true; onDown(); } };
@@ -392,22 +394,28 @@ export class WoshSession {
   // reached directly over WebRTC and signaled through the parent's terminal.
   //
   // Embedding without washd: mgr = null, and
-  //   signal({sdp, cols, rows, rx_out, cid, take}) -> Promise<answer sdp>
+  //   signal({sdp, cols, rows, rx_out, cid, take, join, ice, relay}) -> Promise<answer sdp>
   //     relays the offer to the daemon (e.g. POST to your server, which
-  //     writes {"t":"offer",...} to the daemon's control socket). Throw an
-  //     Error whose message contains "gone" to end the session for good.
-  //   cid: this client instance (stable across reconnects), for roles.
+  //     writes {"t":"offer",...} to the daemon's control socket). The daemon
+  //     reads join, not take: forward join (watch if another client has
+  //     control), and ice and relay so both ends use the same ICE servers.
+  //     It times out after 30 s. Throw an Error whose message contains
+  //     "gone" to end the session for good.
+  //   cid: this client instance, for roles. Keep it per tab across reloads
+  //     (e.g. in sessionStorage) so a reloaded tab keeps control. Default: a
+  //     new random id per WoshSession.
   //   ice: ICE servers for the RTCPeerConnection (default: none, host
-  //     candidates only).
+  //     candidates only). relay: with ice, use TURN only.
   // The transport is WebRTC only (the bridge needs washd).
   constructor(mgr, id, term, { transport = 'auto', onState = () => {}, onExit = () => {}, parent = null, key = null,
-    signal = null, cid = null, ice = null } = {}) {
+    signal = null, cid = null, ice = null, relay = false } = {}) {
+    if (signal != null && typeof signal !== 'function') throw new Error('WoshSession: signal must be a function');
+    if (!mgr && !signal) throw new Error('WoshSession: pass a manager or a signal function');
     this.mgr = mgr; this.id = id; this.term = term;
     this.mode = parent || !mgr ? 'webrtc' : transport; this.onState = onState; this.onExit = onExit;
     this.parent = parent; this.key = key;
-    this.signalFn = signal; this.ice = ice;
+    this.signalFn = signal; this.ice = ice; this.iceRelay = relay; // not this.relay: that is relay()
     this.cid = cid || (mgr && mgr.cid) || randomHex(8);
-    if (!mgr && !signal) throw new Error('WoshSession: pass a manager or a signal function');
     this.filter = new OSCFilter();
     this.token = null;          // from the daemon's info frame: proves chained-hop hellos
     this.waiters = new Map();   // hop id -> resolve(answer|err msg)
@@ -439,7 +447,10 @@ export class WoshSession {
       this.onState({ state: 'connecting' });
       try {
         this.synced = false; this.flushPending = true;
-        this.tr = await this.open();
+        const tr = await this.open();
+        // closed (or ended) while the link was coming up: drop it
+        if (this.closed || this.exited) { tr.close(); return; }
+        this.tr = tr;
         this.take = false; // reconnects keep whatever role we have
         // the first ack may have arrived while open() was finishing
         if (this.synced && this.flushPending) { this.flushPending = false; this.flushInput(); }
@@ -469,7 +480,20 @@ export class WoshSession {
   signal(sdp) {
     const { cols, rows } = this.size();
     if (!this.parent && this.signalFn) {
-      return Promise.resolve().then(() => this.signalFn({ sdp, cols, rows, rx_out: this.rxOut, cid: this.cid, take: this.take }));
+      const { ice, relay } = this.iceConfig();
+      const req = { sdp, cols, rows, rx_out: this.rxOut, cid: this.cid, take: this.take, join: !this.take, ice, relay };
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('offer: timed out')), SIGNAL_TIMEOUT);
+        Promise.resolve().then(() => this.signalFn(req)).then((answer) => {
+          clearTimeout(t);
+          if (typeof answer === 'string' && answer) resolve(answer);
+          else reject(new Error('offer: the signal function returned no answer SDP'));
+        }, (e) => {
+          clearTimeout(t);
+          // connect() reads e.message ("gone" ends the session)
+          reject(e instanceof Error ? e : new Error(e == null ? 'offer failed' : String(e)));
+        });
+      });
     }
     if (!this.parent) {
       return this.mgr.request({ t: 'offer', id: this.id, sdp, cols, rows, rx_out: this.rxOut, cid: this.cid, take: this.take }).then((a) => a.sdp);
@@ -500,10 +524,11 @@ export class WoshSession {
   // say sends a one-way message to a relay parked in this session (bye).
   say(msg) { this.input(encodeInput(msg)); }
 
-  // iceConfig: the embedder's ICE list, else washd's (hello).
+  // iceConfig: the embedder's ICE list and relay flag, else washd's (hello).
   iceConfig() {
+    if (this.ice) return { ice: this.ice, relay: !!this.iceRelay };
     const h = (this.mgr && this.mgr.hello) || {};
-    return { ice: this.ice || h.ice || [], relay: !!h.relay };
+    return { ice: h.ice || [], relay: !!h.relay };
   }
 
   async open() {
@@ -518,7 +543,7 @@ export class WoshSession {
         this.preferBridge = true; // until a reload; roaming back is cheap to retry later
       }
     }
-    return bridgeTransport(this.mgr, this.id, this.size(), this.rxOut, this.take, onFrame, down);
+    return bridgeTransport(this.mgr, this.id, this.size(), this.rxOut, this.cid, this.take, onFrame, down);
   }
 
   // takeControl makes this tab the one that types into the session; the
