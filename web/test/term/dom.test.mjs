@@ -286,3 +286,29 @@ test('Ctrl+click opens a plain URL, also one wrapped across lines', async () => 
     t.dispose();
   }
 });
+
+test('Ctrl+click on a plain URL: concealed text, unsafe OSC 8', async () => {
+  const el = new El('div'); // 100 x 20 cells
+  const t = new Terminal(el, { fontSize: 15 });
+  const opened = [];
+  const prev = window.open;
+  window.open = (u) => { opened.push(u); };
+  const click = (col, row) => {
+    const x = col * 9 + 1, y = row * 18 + 1;
+    t.canvas.dispatch('mousedown', { button: 0, detail: 1, ctrlKey: true, clientX: x, clientY: y });
+    window.dispatch('mouseup', { button: 0, clientX: x, clientY: y });
+  };
+  try {
+    t.write('https://good.example\x1b[8m.evil.test/\x1b[0m\r\n');
+    click(3, 0);
+    assert.equal(opened.at(-1), 'https://good.example/', 'concealed text is not part of the URL');
+    // an OSC 8 target that may not be opened falls back to the URL in its text
+    t.write('\x1b]8;;javascript:alert(1)\x07https://example.com/t\x1b]8;;\x07\r\n');
+    click(3, 1);
+    assert.equal(opened.at(-1), 'https://example.com/t');
+    assert.equal(opened.length, 2);
+  } finally {
+    window.open = prev;
+    t.dispose();
+  }
+});

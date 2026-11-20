@@ -4,7 +4,7 @@
 //   t.onData = (u8) => ...; t.onResize = (cols, rows) => ...;
 //   t.write(u8 | string);
 
-import { Screen, DEFAULT_THEME } from './screen.js';
+import { Screen, DEFAULT_THEME, HIDDEN } from './screen.js';
 import { CanvasRenderer } from './renderer.js';
 import { encodeKey, encodeMouse, encodePaste } from './input.js';
 import { safeURL, urlAt } from './links.js';
@@ -600,8 +600,10 @@ export class Terminal {
     const l = this.screen.lineAt(pos.abs);
     if (!l || pos.cell >= l.cols) return null;
     const id = l.ln[pos.cell];
-    if (id) return this.screen.links.get(id) || null;
-    return this._plainLinkAt(pos);
+    // an OSC 8 target that may not be opened, or one already forgotten,
+    // falls back to a plain URL in the text under the click
+    const url = id ? safeURL(this.screen.links.get(id)) : null;
+    return url || this._plainLinkAt(pos);
   }
 
   // _plainLinkAt: a bare http(s) URL under pos, also when it wraps across
@@ -621,7 +623,7 @@ export class Terminal {
       for (let c = 0; c < l.cols; c++) {
         if (l.wd[c] === 0) continue; // second half of a wide character
         if (abs === pos.abs && c <= pos.cell) at = text.length;
-        text += l.ch[c];
+        text += l.fl[c] & HIDDEN ? ' ' : l.ch[c]; // concealed (SGR 8) text is not shown, so not linked
       }
       if (!l.wrapped || abs >= pos.abs + 32) break;
     }

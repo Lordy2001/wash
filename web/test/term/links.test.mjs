@@ -22,3 +22,17 @@ test('urlAt finds plain URLs and drops sentence punctuation', () => {
   assert.equal(urlAt('go to javascript:alert(1)', 8), null, 'only http(s) is detected');
   assert.equal(urlAt('"https://a.b/c",', 3), 'https://a.b/c');
 });
+
+test('urlAt stops at box drawing and drops trailing Unicode punctuation', () => {
+  assert.equal(urlAt('│https://example.com/a│', 3), 'https://example.com/a');
+  assert.equal(urlAt('見て https://example.com/a。', 5), 'https://example.com/a');
+  assert.equal(urlAt('‘https://example.com/a’…', 3), 'https://example.com/a');
+  assert.equal(urlAt('（https://example.com/a）', 3), 'https://example.com/a');
+});
+
+test('urlAt trims a long run of closing brackets in linear time', () => {
+  const s = 'https://x.io/' + ')'.repeat(50000);
+  const t0 = performance.now();
+  assert.equal(urlAt(s, 3), 'https://x.io/');
+  assert.ok(performance.now() - t0 < 2000, 'not quadratic');
+});

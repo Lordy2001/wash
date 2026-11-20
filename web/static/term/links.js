@@ -10,19 +10,27 @@ export function safeURL(s) {
   return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null;
 }
 
-const URL_RE = /\bhttps?:\/\/[^\s<>"'`\x00-\x1f\x7f]+/gi;
-const PAIRS = { ')': '(', ']': '[', '}': '{' };
+// Box drawing and block elements (U+2500-U+259F) frame text in TUIs and are
+// never part of a URL.
+const URL_RE = /\bhttps?:\/\/[^\s<>"'`\x00-\x1f\x7f\u2500-\u259f]+/gi;
+const TRAIL = '.,;:!?*…。、，’”';
+const PAIRS = { ')': '(', ']': '[', '}': '{', '）': '（', '」': '「', '』': '『', '】': '【' };
 
 // trimURL drops trailing punctuation that belongs to the sentence, keeping
-// a closing bracket that matches one inside the URL (wiki links).
+// a closing bracket that matches one inside the URL (wiki links). Linear:
+// the brackets are counted once, not once per trimmed character.
 function trimURL(s) {
-  for (;;) {
-    const c = s[s.length - 1];
-    if ('.,;:!?*'.includes(c)) { s = s.slice(0, -1); continue; }
+  const n = {};
+  for (const c of s) n[c] = (n[c] || 0) + 1;
+  let end = s.length;
+  while (end > 0) {
+    const c = s[end - 1];
+    if (TRAIL.includes(c)) { end--; continue; }
     const open = PAIRS[c];
-    if (open && s.split(open).length < s.split(c).length) { s = s.slice(0, -1); continue; }
-    return s;
+    if (open && (n[open] || 0) < n[c]) { n[c]--; end--; continue; }
+    break;
   }
+  return s.slice(0, end);
 }
 
 // urlAt finds a plain http(s) URL in text that covers index i, or null.
