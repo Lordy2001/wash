@@ -312,3 +312,68 @@ test('Ctrl+click on a plain URL: concealed text, unsafe OSC 8', async () => {
     t.dispose();
   }
 });
+
+test('a plain click opens a link; Shift-click and clickOpensLinks: false do not', async () => {
+  const el = new El('div'); // 100 x 20 cells, 9 x 18 px
+  const t = new Terminal(el, { fontSize: 15 });
+  const opened = [];
+  const prev = window.open;
+  window.open = (u) => { opened.push(u); };
+  const click = (col, row, mods = {}) => {
+    const x = col * 9 + 1, y = row * 18 + 1;
+    t.canvas.dispatch('mousedown', { button: 0, detail: 1, clientX: x, clientY: y, ...mods });
+    window.dispatch('mouseup', { button: 0, clientX: x, clientY: y });
+  };
+  try {
+    t.write('go https://example.com/a now\r\n');
+    t.write('\x1b]8;;javascript:alert(1)\x07evil\x1b]8;;\x07\r\n');
+    click(5, 0);
+    assert.deepEqual(opened, ['https://example.com/a'], 'plain click');
+    click(0, 0);
+    assert.equal(opened.length, 1, 'plain text is not a link');
+    click(1, 1);
+    assert.equal(opened.length, 1, 'an unsafe OSC 8 link still does not open');
+    click(5, 0, { shiftKey: true });
+    assert.equal(opened.length, 1, 'Shift-click only selects');
+    t.setOptions({ clickOpensLinks: false });
+    click(5, 0);
+    assert.equal(opened.length, 1, 'off: a plain click does not open');
+    click(5, 0, { ctrlKey: true });
+    assert.equal(opened.length, 2, 'off: Ctrl+click still opens');
+  } finally {
+    window.open = prev;
+    t.dispose();
+  }
+});
+
+test('a tap on a link opens it without the keyboard; a tap elsewhere focuses', () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const opened = [];
+  const prev = window.open;
+  window.open = (u) => { opened.push(u); };
+  let focused = 0;
+  t.textarea.focus = () => { focused++; };
+  const tap = (col, row) => {
+    const x = col * 9 + 1, y = row * 18 + 1;
+    let prevented = false;
+    t.canvas.dispatch('touchstart', { touches: [{ clientX: x, clientY: y }] });
+    t.canvas.dispatch('touchend', { touches: [], preventDefault() { prevented = true; } });
+    return prevented;
+  };
+  try {
+    t.write('see https://example.com/tap ok\r\n');
+    assert.equal(tap(8, 0), true, 'no emulated click after the tap');
+    assert.deepEqual(opened, ['https://example.com/tap']);
+    assert.equal(focused, 0, 'the keyboard stays down');
+    assert.equal(tap(0, 0), false);
+    assert.equal(opened.length, 1);
+    assert.equal(focused, 1, 'a tap off a link focuses');
+    t.write('\x1b[?1000h'); // the program reports the mouse: the tap is its click
+    tap(8, 0);
+    assert.equal(opened.length, 1, 'mouse mode: no link');
+  } finally {
+    window.open = prev;
+    t.dispose();
+  }
+});

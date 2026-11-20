@@ -47,6 +47,7 @@ export class Terminal {
       fontFamily: DEFAULT_FONT, fontSize: 15, scrollback: 5000, copyOnSelect: false, ctrlCopyPaste: false,
       clipboard: true, // OSC 52 from the program may set the clipboard (off for playback)
       mouseReporting: true, // mouse modes the program sets get clicks (off for playback: they select)
+      clickOpensLinks: true, // a plain click or a tap opens a link (false: Ctrl/Cmd+click only)
       ...options,
       theme: { ...DEFAULT_THEME, ...(options.theme || {}) },
     };
@@ -208,6 +209,7 @@ export class Terminal {
     }
     if (o.copyOnSelect !== undefined) this.opts.copyOnSelect = o.copyOnSelect;
     if (o.ctrlCopyPaste !== undefined) this.opts.ctrlCopyPaste = o.ctrlCopyPaste;
+    if (o.clickOpensLinks !== undefined) this.opts.clickOpensLinks = o.clickOpensLinks;
     this._schedule();
   }
 
@@ -464,7 +466,10 @@ export class Terminal {
     if (e.button !== 0) return;
     const pos = this._abs(cell);
     const mode = e.detail >= 3 ? 'line' : e.detail === 2 ? 'word' : 'char';
-    this._clickStart = { x: e.clientX, y: e.clientY, link: (e.ctrlKey || e.metaKey) ? this._linkAt(pos) : null };
+    // Ctrl/Cmd+click always opens a link; a plain click does too unless
+    // clickOpensLinks is off. Shift and Alt clicks only select.
+    const plain = this.opts.clickOpensLinks && !e.shiftKey && !e.altKey;
+    this._clickStart = { x: e.clientX, y: e.clientY, link: (e.ctrlKey || e.metaKey || plain) ? this._linkAt(pos) : null };
     this._sel = { anchor: pos, head: pos, mode, active: true, moved: mode !== 'char' };
     this._mouseDown = 0;
     this.screen.dirtyAll = true;
@@ -578,7 +583,20 @@ export class Terminal {
     const st = this._touch;
     this._touch = null;
     if (!st) return;
-    if (!st.moved) { this.focus(); return; }
+    if (!st.moved) {
+      // a tap on a link opens it, without the keyboard popping up. A program
+      // that reports the mouse gets the tap instead (as a click).
+      if (this.opts.clickOpensLinks && !this._mouseReporting(e)) {
+        const url = safeURL(this._linkAt(this._abs(this.renderer.cellAt(st.x0, st.y0))));
+        if (url) {
+          e.preventDefault(); // no emulated click: it would open the link again
+          window.open(url, '_blank', 'noopener,noreferrer');
+          return;
+        }
+      }
+      this.focus();
+      return;
+    }
     e.preventDefault(); // no click/mousedown emulation after a drag
     let v = st.v;
     if (performance.now() - st.at > 80 || Math.abs(v) < 0.3) return;
