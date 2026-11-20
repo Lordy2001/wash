@@ -396,10 +396,10 @@ export class WoshSession {
     this.everSynced = false;
     this.rxOut = 0;              // output received up to
     // output below this offset was in the ring before this tab first
-    // connected: replay (no query replies). Set once, by the first info
-    // frame on a link that starts at rx_out 0, and kept across reconnects.
+    // connected: replay (no query replies). Set by the info frame of each
+    // link while this tab has no output yet (rx_out 0), then kept across
+    // reconnects.
     this.replayEnd = 0;
-    this.replayKnown = false;
     this.inBase = 0;             // input acknowledged up to
     this.inBuf = new Uint8Array(0); // unacknowledged input, starting at inBase
     this.tr = null; this.closed = false; this.exited = false;
@@ -590,11 +590,10 @@ export class WoshSession {
         try {
           const c = JSON.parse(new TextDecoder().decode(b.subarray(1)));
           if (c.op === 'info' && c.token) this.token = c.token;
-          // info comes before any output on a link, so rxOut is where it starts
-          if (c.op === 'info' && this.rxOut === 0 && !this.replayKnown) {
-            this.replayKnown = true;
-            if (c.out > 0) this.replayEnd = c.out;
-          }
+          // info comes before any output on a link, so rxOut is where it
+          // starts. With no output yet, the newest info counts: a controller
+          // may have answered more output since an earlier link's info.
+          if (c.op === 'info' && this.rxOut === 0) this.replayEnd = c.out > 0 ? c.out : 0;
           if (c.op === 'role') this.setRole(c.role);
           if (c.op === 'size' && c.cols > 0 && c.rows > 0) { this.shared = { cols: c.cols, rows: c.rows }; this.layout(); }
         } catch {}

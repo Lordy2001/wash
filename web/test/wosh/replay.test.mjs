@@ -64,6 +64,18 @@ test('a resume answers output made while the link was down', async () => {
   assert.deepEqual(writes, [['abcd', false], ['efgh', false], ['\x1b[5nxyz', true]]);
 });
 
+test('a link that drops before any output: the next link\'s info sets the boundary', async () => {
+  const { ws, writes } = await session();
+  ws.frame(control({ op: 'info', out: 4 })); // the link drops before output arrives
+  ws.linkDown = () => {};
+  await ws.connect();
+  ws.stopPing();
+  // another tab answered 4..8 meanwhile; this tab still has nothing (rx_out 0)
+  ws.frame(control({ op: 'info', out: 8 }));
+  ws.frame(output(0, 'abcd\x1b[5nxyz'));
+  assert.deepEqual(writes, [['abcd\x1b[5n', false], ['xyz', true]]);
+});
+
 test('replayed signals are dropped, except hellos', async () => {
   const { ws } = await session();
   const osc = (m) => '\x1b]5379;wosh;' + Buffer.from(JSON.stringify(m)).toString('base64') + '\x07';

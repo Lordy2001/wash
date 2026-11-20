@@ -127,8 +127,10 @@ export class Terminal {
     if (this._disposed) return;
     const str = typeof data === 'string' ? data : this.utf8.decode(data, { stream: true });
     if (!str) return;
+    // restore, not clear: a callback (onTitle, onBell) may write mid-replay
+    const was = this._replaying;
     this._replaying = !replies;
-    try { this.screen.write(str); } finally { this._replaying = false; }
+    try { this.screen.write(str); } finally { this._replaying = was; }
     if (this.screen.viewOffset) { this.screen.viewOffset = 0; this.screen.dirtyAll = true; }
     this._schedule();
   }

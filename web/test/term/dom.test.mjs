@@ -247,6 +247,20 @@ test('write with replies: false draws but does not answer queries', async () => 
   t.dispose();
 });
 
+test('a write from a callback during a quiet write keeps the rest quiet', () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  t.onTitle = () => t.write('[t]');
+  t.onBell = () => t.write('!');
+  t.write('\x1b]0;title\x07\x1b[5n\x07\x1b[c', { replies: false });
+  assert.deepEqual(sent, [], 'queries after the nested writes stay unanswered');
+  t.write('\x1b[5n');
+  assert.deepEqual(sent, ['\x1b[0n'], 'a live write still answers');
+  t.dispose();
+});
+
 test('write with replies: false does not set the clipboard (OSC 52)', () => {
   const el = new El('div');
   const t = new Terminal(el, { fontSize: 15 });
