@@ -341,7 +341,8 @@ Canvas2D, and the renderer is its own module, so a pixi/WebGL renderer could
 replace it. It supports xterm-style VT, 256-color and truecolor SGR (`;` and
 `:` forms), the alternate screen, scroll regions, wide characters and emoji,
 box drawing drawn as shapes, mouse modes 1000/1002/1003/1006, bracketed
-paste, focus events, copy on select, Ctrl+C (with a selection) / Ctrl+V, synchronized output, OSC 8/52/10/11, and the **kitty
+paste, focus events, copy on select, Ctrl+C (with a selection) / Ctrl+V, synchronized output, OSC 52/10/11, links (Ctrl/Cmd+click opens an
+OSC 8 hyperlink or a plain URL, http and https only), and the **kitty
 graphics protocol**: direct transmission, PNG, RGB(A), zlib, chunking,
 place, delete and query. `kitten icat`, `timg`, `chafa -f kitty` and similar
 tools work as long as they send the image data inline (`t=d`).

@@ -256,3 +256,33 @@ test('Ctrl+click opens OSC 8 links only for http and https', async () => {
     t.dispose();
   }
 });
+
+test('Ctrl+click opens a plain URL, also one wrapped across lines', async () => {
+  const el = new El('div'); // 100 x 20 cells
+  const t = new Terminal(el, { fontSize: 15 });
+  const opened = [];
+  const prev = window.open;
+  window.open = (u) => { opened.push(u); };
+  const click = (col, row) => {
+    const x = col * 9 + 1, y = row * 18 + 1;
+    t.canvas.dispatch('mousedown', { button: 0, detail: 1, ctrlKey: true, clientX: x, clientY: y });
+    window.dispatch('mouseup', { button: 0, clientX: x, clientY: y });
+  };
+  try {
+    t.write('see https://example.com/docs. ok\r\n');
+    click(10, 0);
+    assert.deepEqual(opened, ['https://example.com/docs']);
+    click(1, 0);
+    assert.equal(opened.length, 1, 'plain text is not a link');
+    // 90 columns of text, then a URL that soft-wraps onto the next row
+    t.write('x'.repeat(90) + ' https://example.com/' + 'long'.repeat(5) + '\r\n');
+    click(3, 2);
+    assert.deepEqual(opened.at(-1), 'https://example.com/' + 'long'.repeat(5), 'click on the wrapped half');
+    click(95, 1);
+    assert.equal(opened.length, 3, 'click on the first half');
+    assert.equal(opened.at(-1), opened.at(-2));
+  } finally {
+    window.open = prev;
+    t.dispose();
+  }
+});

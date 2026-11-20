@@ -7,7 +7,7 @@
 import { Screen, DEFAULT_THEME } from './screen.js';
 import { CanvasRenderer } from './renderer.js';
 import { encodeKey, encodeMouse, encodePaste } from './input.js';
-import { safeURL } from './links.js';
+import { safeURL, urlAt } from './links.js';
 
 const DEFAULT_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 const SYNC_TIMEOUT = 150;
@@ -600,7 +600,32 @@ export class Terminal {
     const l = this.screen.lineAt(pos.abs);
     if (!l || pos.cell >= l.cols) return null;
     const id = l.ln[pos.cell];
-    return id ? this.screen.links.get(id) || null : null;
+    if (id) return this.screen.links.get(id) || null;
+    return this._plainLinkAt(pos);
+  }
+
+  // _plainLinkAt: a bare http(s) URL under pos, also when it wraps across
+  // lines (soft wraps only).
+  _plainLinkAt(pos) {
+    const s = this.screen;
+    let start = pos.abs;
+    for (let n = 0; n < 32; n++) {
+      const prev = s.lineAt(start - 1);
+      if (!prev || !prev.wrapped) break;
+      start--;
+    }
+    let text = '', at = -1;
+    for (let abs = start, n = 0; n < 64; abs++, n++) {
+      const l = s.lineAt(abs);
+      if (!l) break;
+      for (let c = 0; c < l.cols; c++) {
+        if (l.wd[c] === 0) continue; // second half of a wide character
+        if (abs === pos.abs && c <= pos.cell) at = text.length;
+        text += l.ch[c];
+      }
+      if (!l.wrapped || abs >= pos.abs + 32) break;
+    }
+    return at < 0 ? null : urlAt(text, at);
   }
 
   // ---- selection -------------------------------------------------------------------
