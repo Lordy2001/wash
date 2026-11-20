@@ -166,14 +166,14 @@ async function startApp(fin) {
   const ids = app.sessions.map((s) => s.id);
   if (want && ids.includes(want)) activate(want);
   else if (ids.length) activate(ids[ids.length - 1]);
-  else newSession(firstMgr());
+  else newSession();
 }
 
 async function connectManager(host, ticket) {
   const mgr = new ManagerConn(host);
   mgr.state = 'connecting';
   mgr.onSessions = (list) => { app.lists.set(mgr, list); mergeSessions(); };
-  mgr.onState = (s) => { mgr.state = s; renderMgrState(); };
+  mgr.onState = (s) => { mgr.state = s; renderMgrState(); if (s === 'connected' && app.mgrs.size) renderWho(); };
   mgr.onAuthLost = (reason) => dropManager(mgr, reason);
   app.mgrs.set(host, mgr);
   try {
@@ -220,11 +220,44 @@ function dropManager(mgr, reason) {
   renderWho(); renderMgrState();
 }
 
+// Targets: where a new session can start. Each washd's own host, then the
+// ssh hosts it offers (`wash config set hosts`), skipping hosts that run a
+// washd of their own. The header's dropdown picks one; + and Ctrl+Shift+T
+// start there.
+function targets() {
+  const out = [];
+  const mgrs = [...app.mgrs.values()].filter((m) => m.hello);
+  const names = new Set(mgrs.map(mgrName));
+  for (const mgr of mgrs) out.push({ key: `${mgrName(mgr)}|`, label: mgrName(mgr), mgr, host: '' });
+  for (const mgr of mgrs) {
+    for (const h of mgr.hello.hosts || []) {
+      if (names.has(h)) continue;
+      out.push({ key: `${mgrName(mgr)}|${h}`, label: mgrs.length > 1 ? `${h} (ssh via ${mgrName(mgr)})` : `${h} (ssh)`, mgr, host: h });
+    }
+  }
+  return out;
+}
+
+function selectedTarget() {
+  const ts = targets();
+  return ts.find((t) => t.key === $('#target').value) || ts[0] || null;
+}
+
 function renderWho() {
   const m = firstMgr();
   const user = m && m.hello ? m.hello.user : '';
-  const hosts = [...app.mgrs.values()].map(mgrName);
-  $('#who').textContent = $('#menu-who').textContent = `${user}@${hosts.join(', ')}`;
+  $('#who-user').textContent = user ? `${user}@` : '';
+  const sel = $('#target');
+  const want = sel.value || store.get('wash.target') || '';
+  sel.textContent = '';
+  for (const t of targets()) {
+    const o = document.createElement('option');
+    o.value = t.key; o.textContent = t.label;
+    sel.append(o);
+  }
+  if ([...sel.options].some((o) => o.value === want)) sel.value = want;
+  const t = selectedTarget();
+  $('#menu-who').textContent = `${user}@${t ? t.label : ''}`;
 }
 
 function renderMgrState() {
@@ -561,8 +594,9 @@ function closeView(id, kill) {
 }
 
 // newSession starts a session on mgr's host, or (host) on one of that
-// washd's ssh hosts.
-async function newSession(mgr = activeMgr(), host = '') {
+// washd's ssh hosts; by default where the header's dropdown points.
+async function newSession(mgr, host = '') {
+  if (!mgr) { const t = selectedTarget(); if (t) { mgr = t.mgr; host = t.host; } }
   if (!mgr) return;
   const o = app.active && app.open.get(app.active);
   const cols = o ? top(o).term.cols : 80, rows = o ? top(o).term.rows : 24;
@@ -576,43 +610,6 @@ async function newSession(mgr = activeMgr(), host = '') {
     activate(r.session.id);
   } catch (e) { alert(`Could not start a session${where ? ' on ' + where : ''}: ${e.message}`); }
   finally { if (where && state.textContent.startsWith('starting on')) renderMgrState(); }
-}
-
-// hostMenu: "+" offers each washd's own host and its ssh hosts (`wash config
-// set hosts`); with one washd and no ssh hosts it starts a session at once.
-function hostMenu(open) {
-  const m = $('#host-menu');
-  const mgrs = [...app.mgrs.values()].filter((x) => x.hello);
-  if (open && mgrs.length === 1 && !(mgrs[0].hello.hosts || []).length) { newSession(mgrs[0]); return; }
-  if (m.hidden === !open) return;
-  m.hidden = !open;
-  $('#new-btn').setAttribute('aria-expanded', String(open));
-  if (!open) return;
-  m.textContent = '';
-  const head = (text) => {
-    const d = document.createElement('div');
-    d.className = 'menu-head';
-    d.textContent = text;
-    m.append(d);
-  };
-  const item = (label, note, mgr, host) => {
-    const b = document.createElement('button');
-    b.className = 'menu-item';
-    b.setAttribute('role', 'menuitem');
-    b.textContent = label;
-    if (note) { const d = document.createElement('span'); d.className = 'dim'; d.textContent = note; b.append(d); }
-    b.onclick = () => { hostMenu(false); newSession(mgr, host); };
-    m.append(b);
-  };
-  head('New session on');
-  for (const mgr of mgrs) {
-    const name = mgrName(mgr);
-    item(name, mgrs.length > 1 ? 'washd' : 'this host', mgr, '');
-    for (const h of mgr.hello.hosts || []) if (!app.mgrs.has(h)) item(h, `ssh from ${name}`, mgr, h);
-  }
-  const btn = $('#new-btn');
-  m.style.left = `${Math.max(4, Math.min(btn.offsetLeft, window.innerWidth - m.offsetWidth - 4))}px`;
-  m.querySelector('.menu-item').focus();
 }
 
 async function killSession(s) {
@@ -728,23 +725,22 @@ async function boot() {
   $('#reg-form').onsubmit = createPasskey;
   $('#to-reg').onclick = (e) => { e.preventDefault(); $('#reg-user').value = $('#login-user').value; show('register'); };
   for (const b of document.querySelectorAll('.to-login')) b.onclick = (e) => { e.preventDefault(); show('login'); };
-  $('#new-btn').onclick = (e) => { e.stopPropagation(); menu(false); hostMenu($('#host-menu').hidden); };
-  $('#host-menu').onclick = (e) => e.stopPropagation();
+  $('#new-btn').onclick = () => newSession();
+  $('#target').onchange = () => { store.set('wash.target', $('#target').value); renderWho(); };
   $('#zoom-in').onclick = () => zoom(1);
   $('#zoom-out').onclick = () => zoom(-1);
   const signOut = async () => { menu(false); teardown(); await api('api/logout', {}).catch(() => {}); show('login'); setMsg($('#login-msg'), 'Signed out.'); };
   $('#logout').onclick = signOut;
   // phones: text size and sign out live in the ☰ menu
-  $('#menu-btn').onclick = (e) => { e.stopPropagation(); hostMenu(false); menu($('#menu').hidden); };
+  $('#menu-btn').onclick = (e) => { e.stopPropagation(); menu($('#menu').hidden); };
   $('#m-zoom-in').onclick = () => zoom(1);
   $('#m-zoom-out').onclick = () => zoom(-1);
   $('#m-logout').onclick = signOut;
   $('#menu').onclick = (e) => e.stopPropagation();
-  document.addEventListener('click', () => { menu(false); hostMenu(false); });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#host-menu').hidden) { e.preventDefault(); hostMenu(false); } });
+  document.addEventListener('click', () => menu(false));
   document.addEventListener('keydown', (e) => {
     if (!e.ctrlKey || !e.shiftKey || !app.mgrs.size) return;
-    if (e.code === 'KeyT') { e.preventDefault(); newSession(activeMgr()); }
+    if (e.code === 'KeyT') { e.preventDefault(); newSession(); }
     if (e.code === 'PageDown' || e.code === 'PageUp') {
       e.preventDefault();
       const i = app.sessions.findIndex((s) => s.id === app.active);

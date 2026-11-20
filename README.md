@@ -292,8 +292,10 @@ to the same wash-web. One sign-in covers all of them:
   `wash keys approve ID` copies it in. `wash keys revoke ID` on any host
   revokes it on wash-web and on the user's other connected washds.
 * The page opens one connection per washd (`/api/ws?host=NAME`) and shows all
-  their sessions as tabs (`shell 1 · ca-mini`). **+** offers each washd's host
-  and the ssh hosts each washd offers.
+  their sessions as tabs (`shell 1 · ca-mini`). The `user@host` dropdown at
+  the top right lists each washd's host and the ssh hosts each washd offers;
+  **+** and Ctrl+Shift+T start a session on the selected one (remembered per
+  device).
 * Admin: `wash web managers` lists user, host and enrollment date;
   `wash web unenroll USER [HOST]` removes one host's washd (or all).
 
@@ -306,9 +308,9 @@ and accounts are looked up in Directory Services (`dscl`), uid 501 and up.
 
 ## Sessions on other hosts
 
-One washd can run sessions on several machines. The **+** button lists this
-host and washd's ssh hosts; `wash sessions new --host HOST` does the same from
-the CLI. Tabs for other hosts are named after the host (`ca`, `ca 2`, ...),
+One washd can run sessions on several machines. The host dropdown at the top
+right lists this host and washd's ssh hosts, and **+** starts a session on the
+selected one; `wash sessions new --host HOST` does the same from the CLI. Tabs for other hosts are named after the host (`ca`, `ca 2`, ...),
 and switching servers is switching tabs.
 
 * **Which hosts.** By default, the first alias of every `Host` line in

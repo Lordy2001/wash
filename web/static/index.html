@@ -48,13 +48,12 @@
 <section class="view" id="main" hidden>
   <header>
     <div id="tabs"></div>
-    <button id="new-btn" title="new session (Ctrl+Shift+T: on this host)" aria-haspopup="true">+</button>
-    <div id="host-menu" role="menu" hidden></div>
+    <button id="new-btn" title="new session on the selected host (Ctrl+Shift+T)">+</button>
     <span class="spacer"></span>
     <span id="mgr-state"></span>
     <button id="zoom-out" title="smaller font">A−</button>
     <button id="zoom-in" title="larger font">A+</button>
-    <span id="who"></span>
+    <label id="who" title="new sessions (+, Ctrl+Shift+T) start on this host"><span id="who-user"></span><select id="target" aria-label="host for new sessions"></select></label>
     <button id="logout" title="sign out">⏻</button>
     <button id="menu-btn" title="menu" aria-haspopup="true" aria-expanded="false">☰</button>
     <div id="menu" role="menu" hidden>
