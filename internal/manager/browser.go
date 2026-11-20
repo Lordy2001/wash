@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,14 +19,14 @@ import (
 //
 // washd -> browser (text JSON):
 //
-//	{"t":"hello","user","host","version","ice":[...],"relay","transport","resume","sessions":[...]}
+//	{"t":"hello","user","host","version","ice":[...],"relay","transport","hosts":[...],"resume","sessions":[...]}
 //	{"t":"sessions","sessions":[...]}                 pushed on every change
 //	{"t":"answer","rid","sdp"}  {"t":"created","rid","session"}  {"t":"ticket","rid","ticket"}
 //	{"t":"ok","rid"}  {"t":"err","rid","err"}  {"t":"bridged","rid"}
 //
 // browser -> washd:
 //
-//	{"t":"list"} {"t":"new","name","cols","rows"} {"t":"kill","id"} {"t":"rename","id","name"}
+//	{"t":"list"} {"t":"new","name","cols","rows","host"}  host: one of hello.hosts (else here) {"t":"kill","id"} {"t":"rename","id","name"}
 //	{"t":"offer","id","sdp","cols","rows","rx_out","cid","take"}   WebRTC straight to the wosh daemon
 //	   cid: the browser tab (stable across its reconnects). take: the user asked
 //	   for control; without it the tab watches if another tab has control. The
@@ -62,6 +61,7 @@ type bmsg struct {
 	Relay    bool             `json:"relay,omitempty"`
 	Trans    string           `json:"transport,omitempty"`
 	Resume   string           `json:"resume,omitempty"`
+	Hosts    []string         `json:"hosts,omitempty"` // hello: ssh hosts "new" may name
 	Hop      *Hop             `json:"hop,omitempty"`
 	Data     string           `json:"data,omitempty"`  // build chunk (base64)
 	Stamp    string           `json:"stamp,omitempty"` // build stamp
@@ -170,9 +170,8 @@ func (m *Manager) serveBrowser(sid, remote string, t *ticket) {
 		m.changed()
 	}()
 	cfg := m.config()
-	host, _ := os.Hostname()
-	b.send(bmsg{T: "hello", User: m.user, Host: host, Version: Version, ICE: cfg.ice(), Relay: cfg.Relay,
-		Trans: cfg.transport(), Resume: m.issue("resume", t.key, resumeTTL), Sessions: m.List()})
+	b.send(bmsg{T: "hello", User: m.user, Host: m.creds.HostName(), Version: Version, ICE: cfg.ice(), Relay: cfg.Relay,
+		Trans: cfg.transport(), Hosts: cfg.hosts(), Resume: m.issue("resume", t.key, resumeTTL), Sessions: m.List()})
 	for {
 		typ, data, err := c.Read(bctx)
 		if err != nil {
@@ -201,7 +200,12 @@ func (m *Manager) handleBrowser(b *browserConn, req bmsg) {
 	case "list":
 		b.send(bmsg{T: "sessions", RID: req.RID, Sessions: m.List()})
 	case "new":
-		s, err := m.New(ctx, req.Name, req.Cols, req.Rows)
+		if req.Host != "" { // ssh, maybe a wosh upload, and a warm start over the network
+			cancel()
+			ctx, cancel = context.WithTimeout(b.ctx, 90*time.Second)
+			defer cancel()
+		}
+		s, err := m.New(ctx, req.Host, req.Name, req.Cols, req.Rows)
 		if err != nil {
 			fail(err)
 			return

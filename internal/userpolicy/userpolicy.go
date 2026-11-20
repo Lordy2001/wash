@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -120,7 +121,8 @@ func CheckLocal(name string) error {
 	return nil
 }
 
-// Lookup finds name in /etc/passwd, then through getent (LDAP, sssd, ...).
+// Lookup finds name in /etc/passwd, then through getent (LDAP, sssd, ...),
+// and on macOS (whose people are not in /etc/passwd) in Directory Services.
 func Lookup(name string) (Account, error) {
 	if b, err := os.ReadFile("/etc/passwd"); err == nil {
 		if a, ok := findPasswd(b, name); ok {
@@ -132,7 +134,41 @@ func Lookup(name string) (Account, error) {
 			return a, nil
 		}
 	}
+	if runtime.GOOS == "darwin" && !strings.ContainsAny(name, "/ ") && name != "" {
+		if out, err := exec.Command("dscl", ".", "-read", "/Users/"+name, "UniqueID", "UserShell").Output(); err == nil {
+			if a, ok := parseDscl(out, name); ok {
+				return a, nil
+			}
+		}
+	}
 	return Account{}, fmt.Errorf("no passwd entry for %q", name)
+}
+
+// parseDscl reads `dscl . -read /Users/NAME UniqueID UserShell`:
+// "UniqueID: 501" and "UserShell: /bin/zsh" (a long value may wrap onto the
+// next line after a bare "UserShell:").
+func parseDscl(b []byte, name string) (Account, bool) {
+	a := Account{Name: name, UID: -1}
+	lines := strings.Split(string(b), "\n")
+	for i, l := range lines {
+		k, v, ok := strings.Cut(l, ":")
+		if !ok {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if v == "" && i+1 < len(lines) {
+			v = strings.TrimSpace(lines[i+1])
+		}
+		switch k {
+		case "UniqueID":
+			if n, err := strconv.Atoi(v); err == nil {
+				a.UID = n
+			}
+		case "UserShell":
+			a.Shell = v
+		}
+	}
+	return a, a.UID >= 0 && a.Shell != ""
 }
 
 func findPasswd(b []byte, name string) (Account, bool) {
@@ -151,9 +187,13 @@ func findPasswd(b []byte, name string) (Account, bool) {
 	return Account{}, false
 }
 
-// uidRange reads UID_MIN and UID_MAX from /etc/login.defs (default 1000-60000).
+// uidRange reads UID_MIN and UID_MAX from /etc/login.defs (default 1000-60000;
+// on macOS, which has no login.defs, people start at 501).
 func uidRange() (int, int) {
 	lo, hi := 1000, 60000
+	if runtime.GOOS == "darwin" {
+		lo = 501
+	}
 	b, err := os.ReadFile("/etc/login.defs")
 	if err != nil {
 		return lo, hi

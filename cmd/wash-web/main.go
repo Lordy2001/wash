@@ -4,8 +4,8 @@
 //
 //	wash-web [serve]            run the server (default)
 //	wash-web enroll [-q] USER   print a one-time code for `wash enroll` (-q: code only)
-//	wash-web unenroll USER      forget USER's manager token
-//	wash-web managers           list enrolled users
+//	wash-web unenroll USER [HOST]  forget USER's washd token(s) (all hosts, or HOST's)
+//	wash-web managers           list enrolled washds (user, host)
 //	wash-web keys [USER]        list passkeys (approved and pending)
 //	wash-web fingerprint        print the TLS fingerprint washd pins (the CA's)
 //	wash-web ca                 print the CA certificate (also served at /ca.crt)
@@ -111,22 +111,34 @@ func main() {
 			fmt.Printf("\nServer certificate SHA-256 (compare when wash enroll asks):\n  %s\n", fp)
 		}
 	case "unenroll":
-		if len(args) != 1 {
-			fatal("usage: wash-web unenroll USER")
+		if len(args) != 1 && len(args) != 2 {
+			fatal("usage: wash-web unenroll USER [HOST]")
 		}
-		if err := db.Unenroll(args[0]); err != nil {
-			fatal("%v", err)
+		host := ""
+		if len(args) == 2 {
+			host = args[1]
 		}
-		if n := web.RemovePlaybacks(filepath.Join(data, "playback"), args[0]); n > 0 {
-			fmt.Printf("removed %d hosted recording(s) of %s\n", n, args[0])
-		}
-	case "managers":
-		users, err := db.Managers()
+		n, err := db.Unenroll(args[0], host)
 		if err != nil {
 			fatal("%v", err)
 		}
-		for _, u := range users {
-			fmt.Println(u)
+		fmt.Printf("removed %d washd token(s) of %s\n", n, args[0])
+		if host == "" { // the user is gone entirely
+			if n := web.RemovePlaybacks(filepath.Join(data, "playback"), args[0]); n > 0 {
+				fmt.Printf("removed %d hosted recording(s) of %s\n", n, args[0])
+			}
+		}
+	case "managers":
+		rows, err := db.Managers()
+		if err != nil {
+			fatal("%v", err)
+		}
+		for _, r := range rows {
+			host := r.Host
+			if host == "" {
+				host = "(named on its next link)"
+			}
+			fmt.Printf("%-16s %-24s %s\n", r.User, host, r.Created.Format("2006-01-02"))
 		}
 	case "keys":
 		user := ""

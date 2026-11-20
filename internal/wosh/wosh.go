@@ -75,6 +75,9 @@ type Msg struct {
 	CID   string            `json:"cid,omitempty"`   // offer: client instance (shared sessions)
 	Join  bool              `json:"join,omitempty"`  // offer: watch if another client has control
 	Watch bool              `json:"watch,omitempty"` // offer: passive watcher (recorder), never controls
+	Host  string            `json:"host,omitempty"`  // hello: the daemon's host name
+	Sock  string            `json:"sock,omitempty"`  // hello: daemon control socket (binary-less reattach)
+	OS    string            `json:"os,omitempty"`    // hello: the daemon host's GOOS
 }
 
 // Request sends one message to a daemon control socket and returns its reply.

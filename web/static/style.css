@@ -18,6 +18,13 @@ header { position: relative; }
   display: flex; flex-direction: column; gap: 6px; padding: 10px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
 #menu[hidden] { display: none; }
+#host-menu { position: absolute; top: 100%; z-index: 20; min-width: 180px; margin-top: 4px;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+#host-menu[hidden] { display: none; }
+#host-menu .menu-head { color: var(--dim); font-size: 12px; padding: 2px 6px 4px; }
+#host-menu .menu-item { min-height: 34px; padding: 4px 10px; }
+#host-menu .menu-item .dim { color: var(--dim); font-size: 12px; margin-left: 6px; }
 .menu-who { color: var(--dim); font-size: 12px; padding: 0 2px 4px; border-bottom: 1px solid var(--line); }
 .menu-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 14px; }
 .menu-zoom { display: flex; align-items: center; gap: 6px; }

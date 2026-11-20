@@ -55,11 +55,11 @@ func TestAdoptAndRoute(t *testing.T) {
 		conns: map[*browserConn]bool{}, quit: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	a, err := m.New(ctx, "a", 80, 24)
+	a, err := m.New(ctx, "", "a", 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.New(ctx, "b", 80, 24)
+	b, err := m.New(ctx, "", "b", 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestAdoptRefusedWhenRouteFails(t *testing.T) {
 		attached: map[string]int{}, conns: map[*browserConn]bool{}, quit: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	a, err := m.New(ctx, "a", 80, 24)
+	a, err := m.New(ctx, "", "a", 80, 24)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,8 +229,8 @@ exec sh -c "$1"
 		attached: map[string]int{}, conns: map[*browserConn]bool{}, quit: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	p, _ := m.New(ctx, "parent", 80, 24)
-	b, _ := m.New(ctx, "far", 80, 24)
+	p, _ := m.New(ctx, "", "parent", 80, 24)
+	b, _ := m.New(ctx, "", "far", 80, 24)
 	bs, _ := m.get(b.ID)
 	key, sock := bs.Key, bs.sock()
 	m.Forget(b.ID)
@@ -267,8 +267,8 @@ func TestAdoptLocalDaemon(t *testing.T) {
 		attached: map[string]int{}, conns: map[*browserConn]bool{}, quit: make(chan struct{})}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	p, _ := m.New(ctx, "parent", 80, 24)
-	b, _ := m.New(ctx, "back-here", 80, 24)
+	p, _ := m.New(ctx, "", "parent", 80, 24)
+	b, _ := m.New(ctx, "", "back-here", 80, 24)
 	bs, _ := m.get(b.ID)
 	key, sock := bs.Key, bs.sock()
 	m.Forget(b.ID)

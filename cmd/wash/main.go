@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
@@ -42,20 +44,21 @@ manager:
   wash restart                  stop and start washd
   wash status                   washd, link to the website, sessions
   wash logs [-n N]              last lines of the washd log
-  wash enroll [URL [CODE]] [--fingerprint=SHA256] [--yes]
+  wash enroll [URL [CODE]] [--host NAME] [--fingerprint=SHA256] [--yes]
                                 link washd to wash-web. Without CODE, wash gets the code
                                 and certificate fingerprint from the web container itself
                                 (podman: wash-web, wash-web-dev; else upod wash; or
                                 $WASH_WEB_EXEC). URL defaults to https://$(hostname):8443
   wash web ARGS...              run wash-web admin commands in that container
-                                (keys, managers, unenroll USER, fingerprint, backup FILE)
-  wash service install|uninstall  systemd user unit for washd
+                                (keys, managers, unenroll USER [HOST], fingerprint, backup FILE)
+  wash service install|uninstall  washd as a service (systemd user unit; LaunchAgent on macOS)
   wash agent [SOCK|--clear]     give washd your ssh-agent ($SSH_AUTH_SOCK; "wash up" does
                                 this too) for its ssh routes to chained-hop sessions
 
 sessions:
   wash sessions                 list (alias: wash ls)
-  wash sessions new [NAME]      start a session
+  wash sessions new [NAME] [--host HOST]
+                                start a session (here, or on an ssh host: see "wash config get hosts")
   wash sessions kill ID...|--all
   wash sessions rename ID NAME
 
@@ -296,7 +299,7 @@ func status() error {
 		}
 	}
 	fmt.Printf("washd %s  pid %d  up since %s  user %s\n", st.Version, st.PID, st.Since.Format("2006-01-02 15:04"), st.User)
-	fmt.Printf("website  %s  %s\n", st.URL, link)
+	fmt.Printf("website  %s  %s  (as %s on host %s)\n", st.URL, link, st.User, st.Host)
 	fmt.Printf("browsers %d connected\n", st.Browsers)
 	if st.Agent != "" {
 		fmt.Printf("ssh-agent %s\n", st.Agent)
@@ -332,6 +335,10 @@ func enroll(args []string) error {
 		return err
 	}
 	fp, args := flagVal(args, "--fingerprint")
+	hostName, args := flagVal(args, "--host")
+	if hostName == "" {
+		hostName = manager.ShortHostname()
+	}
 	yes := has(args, "--yes")
 	var pos []string
 	for _, a := range args {
@@ -419,7 +426,7 @@ func enroll(args []string) error {
 	}
 	creds := manager.Creds{URL: base, Fingerprint: fp}
 	client := pinnedClient(fp)
-	body, _ := json.Marshal(map[string]string{"code": pos[1]})
+	body, _ := json.Marshal(map[string]string{"code": pos[1], "host": hostName})
 	resp, err := client.Post(base+"/api/enroll", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -436,11 +443,11 @@ func enroll(args []string) error {
 	if err := userpolicy.CheckLocal(out.User); err != nil {
 		return err
 	}
-	creds.User, creds.Token = out.User, out.Token
+	creds.User, creds.Token, creds.Host = out.User, out.Token, hostName
 	if err := manager.SaveCreds(creds); err != nil {
 		return err
 	}
-	fmt.Printf("enrolled with %s as %s (%s)\n", base, out.User, paths.ManagerFile())
+	fmt.Printf("enrolled with %s as %s on host %s (%s)\n", base, out.User, hostName, paths.ManagerFile())
 	if running() {
 		fmt.Println("restarting washd to use the new link")
 		if err := down(false); err != nil {
@@ -548,11 +555,16 @@ func sessions(args []string) error {
 		}
 		printSessions(ss)
 	case "new":
+		host, args := flagVal(args, "--host")
 		var s manager.SessionInfo
-		if err := manager.Call(manager.Request{Op: "sessions.new", Name: strings.Join(args, " ")}, &s); err != nil {
+		if err := manager.Call(manager.Request{Op: "sessions.new", Name: strings.Join(args, " "), Host: host}, &s); err != nil {
 			return err
 		}
-		fmt.Printf("started %s (%s), pid %d\n", s.ID, s.Name, s.PID)
+		if s.Remote != nil {
+			fmt.Printf("started %s (%s) on %s\n", s.ID, s.Name, host)
+		} else {
+			fmt.Printf("started %s (%s), pid %d\n", s.ID, s.Name, s.PID)
+		}
 	case "kill", "rm":
 		if has(args, "--all") {
 			var n int
@@ -749,6 +761,9 @@ func service(args []string) error {
 	if len(args) != 1 || (args[0] != "install" && args[0] != "uninstall") {
 		return errors.New("usage: wash service install|uninstall")
 	}
+	if runtime.GOOS == "darwin" {
+		return launchdService(args[0])
+	}
 	home, _ := os.UserHomeDir()
 	unit := filepath.Join(home, ".config", "systemd", "user", "washd.service")
 	if args[0] == "uninstall" {
@@ -788,4 +803,76 @@ WantedBy=default.target
 	fmt.Println("enable with:  systemctl --user daemon-reload && systemctl --user enable --now washd")
 	fmt.Println("keep it running after logout:  loginctl enable-linger $USER")
 	return nil
+}
+
+// --- macOS: launchd ---------------------------------------------------------------
+
+const launchdLabel = "local.wash.washd"
+
+// launchdService installs washd as a LaunchAgent (macOS has no systemd):
+// started at login and kept running after a crash, not after `wash down`
+// (exit 0). The wosh sessions are their own process groups and must outlive
+// washd, hence AbandonProcessGroup. launchd jobs get a minimal PATH, so the
+// usual places for wosh, ssh and the user's tools are listed.
+func launchdService(op string) error {
+	home, _ := os.UserHomeDir()
+	plist := filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist")
+	domain := fmt.Sprintf("gui/%d", os.Getuid())
+	if op == "uninstall" {
+		_ = exec.Command("launchctl", "bootout", domain+"/"+launchdLabel).Run()
+		if err := os.Remove(plist); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		fmt.Println("removed", plist)
+		return nil
+	}
+	bin, err := washdPath()
+	if err != nil {
+		return errors.New("washd binary not found")
+	}
+	bin, _ = filepath.Abs(bin)
+	path := strings.Join([]string{filepath.Join(home, "bin"), filepath.Join(home, ".local", "bin"), filepath.Join(home, "go", "bin"),
+		"/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"}, ":")
+	x := func(s string) string {
+		var b strings.Builder
+		_ = xml.EscapeText(&b, []byte(s))
+		return b.String()
+	}
+	content := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>%s</string>
+	<key>ProgramArguments</key><array><string>%s</string></array>
+	<key>RunAtLoad</key><true/>
+	<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+	<key>ThrottleInterval</key><integer>5</integer>
+	<key>AbandonProcessGroup</key><true/>
+	<key>WorkingDirectory</key><string>%s</string>
+	<key>EnvironmentVariables</key><dict><key>PATH</key><string>%s</string></dict>
+	<key>StandardOutPath</key><string>%s</string>
+	<key>StandardErrorPath</key><string>%s</string>
+</dict>
+</plist>
+`, launchdLabel, x(bin), x(home), x(path), x(paths.LogFile()), x(paths.LogFile()))
+	if err := os.MkdirAll(filepath.Dir(plist), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(plist, []byte(content), 0o644); err != nil {
+		return err
+	}
+	fmt.Println("wrote", plist)
+	if running() {
+		fmt.Println("washd is running already; to hand it to launchd:  wash down && launchctl bootstrap " + domain + " " + plist)
+		return nil
+	}
+	_ = exec.Command("launchctl", "bootout", domain+"/"+launchdLabel).Run() // an older copy
+	if out, err := exec.Command("launchctl", "bootstrap", domain, plist).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl bootstrap: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	for i := 0; i < 50 && !running(); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
+	fmt.Printf("washd runs under launchd now (starts at login; log %s)\n", paths.LogFile())
+	return status()
 }

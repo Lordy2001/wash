@@ -50,3 +50,17 @@ func TestFindPasswd(t *testing.T) {
 		t.Fatal("found missing user")
 	}
 }
+
+func TestParseDscl(t *testing.T) {
+	a, ok := parseDscl([]byte("UniqueID: 501\nUserShell: /opt/homebrew/bin/fish\n"), "ca")
+	if !ok || a.UID != 501 || a.Shell != "/opt/homebrew/bin/fish" || a.Name != "ca" {
+		t.Fatalf("%+v %v", a, ok)
+	}
+	a, ok = parseDscl([]byte("UniqueID: 502\nUserShell:\n /bin/zsh\n"), "x")
+	if !ok || a.UID != 502 || a.Shell != "/bin/zsh" {
+		t.Fatalf("wrapped: %+v %v", a, ok)
+	}
+	if _, ok := parseDscl([]byte("No such key: UniqueID\n"), "x"); ok {
+		t.Fatal("parsed garbage")
+	}
+}

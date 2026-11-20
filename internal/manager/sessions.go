@@ -306,10 +306,10 @@ func (m *Manager) get(id string) (*Session, error) {
 	return hit, nil
 }
 
-// New starts a wosh daemon and its shell. The shell starts on the first
-// offer, so washd connects once itself (warm start); the session then keeps
-// running with nobody attached.
-func (m *Manager) New(ctx context.Context, name string, cols, rows uint16) (SessionInfo, error) {
+// New starts a wosh daemon and its shell, here or (host set) on another
+// host over ssh. The shell starts on the first offer, so washd connects once
+// itself (warm start); the session then keeps running with nobody attached.
+func (m *Manager) New(ctx context.Context, host, name string, cols, rows uint16) (SessionInfo, error) {
 	m.prune()
 	cfg := m.config()
 	m.mu.Lock()
@@ -317,6 +317,9 @@ func (m *Manager) New(ctx context.Context, name string, cols, rows uint16) (Sess
 	m.mu.Unlock()
 	if n >= cfg.maxSessions() {
 		return SessionInfo{}, fmt.Errorf("session limit reached (%d; `wash config set max_sessions N`)", cfg.maxSessions())
+	}
+	if host != "" {
+		return m.newRemote(ctx, host, name, cols, rows)
 	}
 	bin, err := cfg.WoshPath()
 	if err != nil {

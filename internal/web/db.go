@@ -51,11 +51,21 @@ CREATE TABLE IF NOT EXISTS credentials (
 	last_used INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS credentials_user ON credentials(user);
-CREATE TABLE IF NOT EXISTS managers (
+CREATE TABLE IF NOT EXISTS managers (       -- one washd per user (before multi-host); migrated below
 	user       TEXT PRIMARY KEY,
 	token_hash BLOB NOT NULL UNIQUE,
 	created    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS manager_hosts (  -- one washd per user and host
+	user       TEXT NOT NULL,
+	host       TEXT NOT NULL,                 -- '' = enrolled before multi-host: named on first link
+	token_hash BLOB NOT NULL UNIQUE,
+	created    INTEGER NOT NULL,
+	PRIMARY KEY (user, host)
+);
+INSERT OR IGNORE INTO manager_hosts(user, host, token_hash, created)
+	SELECT user, '', token_hash, created FROM managers;
+DELETE FROM managers;
 CREATE TABLE IF NOT EXISTS meta (
 	k TEXT PRIMARY KEY,
 	v BLOB NOT NULL
@@ -292,10 +302,11 @@ func (d *DB) NewEnrollCode(user string) (string, error) {
 	return code, err
 }
 
-// Enroll redeems a code; returns the user and the manager's long-lived token
-// (replacing any previous manager token of that user).
+// Enroll redeems a code; returns the user and the long-lived token of that
+// user's washd on host (replacing an earlier token of the same user and
+// host only: each host's washd has its own).
 // refuse (may be nil) vetoes the code's user; the code is used up either way.
-func (d *DB) Enroll(code string, refuse func(user string) bool) (user, token string, err error) {
+func (d *DB) Enroll(code, host string, refuse func(user string) bool) (user, token string, err error) {
 	tx, err := d.db.Begin()
 	if err != nil {
 		return "", "", err
@@ -316,50 +327,71 @@ func (d *DB) Enroll(code string, refuse func(user string) bool) (user, token str
 		return "", "", userpolicy.ErrDenied
 	}
 	token = randToken(32)
-	if _, err := tx.Exec(`INSERT INTO managers(user, token_hash, created) VALUES(?,?,?)
-		ON CONFLICT(user) DO UPDATE SET token_hash=excluded.token_hash, created=excluded.created`,
-		user, hash(token), time.Now().Unix()); err != nil {
+	if _, err := tx.Exec(`INSERT INTO manager_hosts(user, host, token_hash, created) VALUES(?,?,?,?)
+		ON CONFLICT(user, host) DO UPDATE SET token_hash=excluded.token_hash, created=excluded.created`,
+		user, host, hash(token), time.Now().Unix()); err != nil {
 		return "", "", err
 	}
 	return user, token, tx.Commit()
 }
 
-// ManagerUser resolves a manager token.
-func (d *DB) ManagerUser(token string) (string, bool) {
+// ManagerFor resolves a manager token to its user and host. A token from
+// before multi-host has no host yet: it takes claim (the host name washd
+// reports) unless that user already has a washd of that name.
+func (d *DB) ManagerFor(token, claim string) (user, host string, ok bool) {
 	if token == "" {
-		return "", false
+		return "", "", false
 	}
-	var u string
-	if d.db.QueryRow(`SELECT user FROM managers WHERE token_hash=?`, hash(token)).Scan(&u) != nil {
-		return "", false
+	if d.db.QueryRow(`SELECT user, host FROM manager_hosts WHERE token_hash=?`, hash(token)).Scan(&user, &host) != nil {
+		return "", "", false
 	}
-	return u, true
+	if host == "" && claim != "" {
+		if _, err := d.db.Exec(`UPDATE manager_hosts SET host=? WHERE token_hash=? AND host=''`, claim, hash(token)); err == nil {
+			host = claim
+		}
+	}
+	return user, host, true
 }
 
-// Managers lists enrolled users.
-func (d *DB) Managers() ([]string, error) {
-	rows, err := d.db.Query(`SELECT user FROM managers ORDER BY user`)
+// ManagerRow is one enrolled washd.
+type ManagerRow struct {
+	User, Host string
+	Created    time.Time
+}
+
+// Managers lists enrolled washds.
+func (d *DB) Managers() ([]ManagerRow, error) {
+	rows, err := d.db.Query(`SELECT user, host, created FROM manager_hosts ORDER BY user, host`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []string
+	var out []ManagerRow
 	for rows.Next() {
-		var u string
-		if rows.Scan(&u) == nil {
-			out = append(out, u)
+		var r ManagerRow
+		var c int64
+		if rows.Scan(&r.User, &r.Host, &c) == nil {
+			r.Created = time.Unix(c, 0)
+			out = append(out, r)
 		}
 	}
 	return out, nil
 }
 
-// Unenroll removes a user's manager token.
-func (d *DB) Unenroll(user string) error {
-	_, err := d.db.Exec(`DELETE FROM managers WHERE user=?`, user)
-	return err
+// Unenroll removes the manager token of user's washd on host ("" = all of
+// user's); it reports how many were removed.
+func (d *DB) Unenroll(user, host string) (int64, error) {
+	q, args := `DELETE FROM manager_hosts WHERE user=?`, []any{user}
+	if host != "" {
+		q, args = q+` AND host=?`, append(args, host)
+	}
+	res, err := d.db.Exec(q, args...)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
-// KeyInfos lists passkeys for the admin CLI ("" = everyone).
 func (d *DB) KeyInfos(user string) ([]link.KeyInfo, error) {
 	rows, err := d.Keys(user)
 	if err != nil {

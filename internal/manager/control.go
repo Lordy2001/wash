@@ -20,6 +20,7 @@ type Request struct {
 	Op   string `json:"op"`
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
+	Host string `json:"host,omitempty"` // sessions.new: start it on this ssh host
 	Key  string `json:"key,omitempty"`
 	Val  string `json:"val,omitempty"`
 	All  bool   `json:"all,omitempty"`
@@ -137,7 +138,7 @@ func (m *Manager) control(req Request) (any, error) {
 	case "sessions.list":
 		return m.List(), nil
 	case "sessions.new":
-		return m.New(ctx, req.Name, 0, 0)
+		return m.New(ctx, req.Host, req.Name, 0, 0)
 	case "sessions.kill":
 		if req.All {
 			n := 0

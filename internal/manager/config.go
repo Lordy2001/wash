@@ -23,6 +23,25 @@ type Creds struct {
 	User        string `json:"user"`                  // user the web side knows us as
 	Token       string `json:"token"`                 // bearer token
 	Fingerprint string `json:"fingerprint,omitempty"` // pinned cert SHA-256 (hex); empty = system CAs
+	// Host: the name wash-web knows this washd by (one washd per user and
+	// host). Empty in enrollments from before multi-host: HostName then.
+	Host string `json:"host,omitempty"`
+}
+
+// HostName is this washd's name on wash-web: the enrolled one, else the
+// machine's short host name.
+func (c Creds) HostName() string {
+	if c.Host != "" {
+		return c.Host
+	}
+	return ShortHostname()
+}
+
+// ShortHostname is os.Hostname without a domain ("ca-mini.local" -> "ca-mini").
+func ShortHostname() string {
+	h, _ := os.Hostname()
+	h, _, _ = strings.Cut(h, ".")
+	return h
 }
 
 // Config is the manager's settings (`wash config`).
@@ -37,6 +56,9 @@ type Config struct {
 	// ForwardAgent: washd's route ssh forwards the user's agent through
 	// intermediate hops (so a hop can use local keys for the next ssh).
 	ForwardAgent bool `json:"forward_agent,omitempty"`
+	// Hosts: ssh hosts new sessions may start on (nil = the Host aliases in
+	// ~/.ssh/config; empty = this host only).
+	Hosts []string `json:"hosts"`
 }
 
 // ConfigKeys documents the keys `wash config set` accepts.
@@ -49,6 +71,7 @@ var ConfigKeys = map[string]string{
 	"transport":     "auto | webrtc | bridge (bridge = through washd over the WebSocket)",
 	"max_sessions":  "maximum concurrent sessions",
 	"term":          "TERM for new sessions",
+	"hosts":         "ssh hosts new sessions can start on, comma separated; 'ssh' = the Host aliases in ~/.ssh/config (default), 'none' = this host only",
 	"forward_agent": "true: washd's ssh routes forward your agent through intermediate hops (root there can use it meanwhile)",
 }
 
@@ -183,6 +206,11 @@ func (c Config) Get(key string) (string, error) {
 		return c.term(), nil
 	case "forward_agent":
 		return strconv.FormatBool(c.ForwardAgent), nil
+	case "hosts":
+		if c.Hosts == nil {
+			return "ssh: " + strings.Join(sshConfigHosts(), ","), nil
+		}
+		return strings.Join(c.Hosts, ","), nil
 	}
 	return "", fmt.Errorf("unknown key %q", key)
 }
@@ -275,6 +303,22 @@ func (c *Config) Set(key, val string) error {
 			return err
 		}
 		c.ForwardAgent = b
+	case "hosts":
+		switch val {
+		case "ssh", "":
+			c.Hosts = nil
+		case "none":
+			c.Hosts = []string{}
+		default:
+			hs := []string{}
+			for _, h := range strings.FieldsFunc(val, func(r rune) bool { return r == ',' || r == ' ' }) {
+				if !validHost(h) {
+					return fmt.Errorf("bad host %q", h)
+				}
+				hs = append(hs, h)
+			}
+			c.Hosts = hs
+		}
 	default:
 		return fmt.Errorf("unknown key %q", key)
 	}

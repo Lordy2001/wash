@@ -146,12 +146,12 @@ washd keeps running after you log out if you start it from systemd:
 
 ```
 wash up | down [--kill-sessions] | restart | status | logs
-wash sessions [list] | new [NAME] | kill ID...|--all | rename ID NAME     (wash ls)
+wash sessions [list] | new [NAME] [--host HOST] | kill ID...|--all | rename ID NAME     (wash ls)
 wash keys [list] | open [DURATION] | close | approve ID | revoke ID
 wash watch start|record SESSION | stop SESSION | list | play FILE_ID [--raw] | host FILE_ID | unhost FILE_ID | rm FILE_ID
 wash config | config get KEY | config set KEY VALUE
-      wosh, command, stun, turn, relay, transport (auto|webrtc|bridge), max_sessions, term
-wash enroll [URL [CODE]] [--fingerprint=SHA256] [--yes]
+      wosh, command, stun, turn, relay, transport (auto|webrtc|bridge), max_sessions, term, hosts
+wash enroll [URL [CODE]] [--host NAME] [--fingerprint=SHA256] [--yes]
 wash web keys|managers|unenroll USER|fingerprint|backup FILE   (wash-web admin, via podman/upod)
 wash service install|uninstall
 ```
@@ -269,6 +269,69 @@ connected directly to HOST and the intermediate session goes away.
 
 `wash ls` shows remote sessions with their route. `wash sessions kill` hangs them
 up over the wosh protocol.
+
+## Several hosts, one website
+
+Each machine you want shells on can run its own washd, as your user, linked
+to the same wash-web. One sign-in covers all of them:
+
+* `wash enroll URL CODE [--host NAME]` on the machine (NAME defaults to its
+  short host name). wash-web keeps one token per user **and host**, so
+  enrolling a second machine does not replace the first. Enrolling the same
+  host again replaces only that host's token. washds enrolled before this
+  existed name themselves on their next link (`X-Wash-Host`).
+* Sign-in: wash-web asks every connected washd of the user for a nonce. With
+  one washd the challenge is `webNonce ‖ nonce` as before. With several it is
+  `webNonce ‖ SHA-256(tag ‖ nonce₁ ‖ nonce₂ ‖ …)`, and each washd gets the
+  nonce list, checks that the challenge commits to it and that one of the
+  nonces is its own. So one passkey assertion is verified independently by
+  every washd. Each washd that accepts gives the page a ticket; a washd that
+  refuses (e.g. the key is not approved there) is simply left out.
+* Each washd checks passkeys against its own `keys.json`, so approve a key on
+  every host: `wash keys` there lists it as "approved on web only", and
+  `wash keys approve ID` copies it in. `wash keys revoke ID` on any host
+  revokes it on wash-web and on the user's other connected washds.
+* The page opens one connection per washd (`/api/ws?host=NAME`) and shows all
+  their sessions as tabs (`shell 1 · ca-mini`). **+** offers each washd's host
+  and the ssh hosts each washd offers.
+* Admin: `wash web managers` lists user, host and enrollment date;
+  `wash web unenroll USER [HOST]` removes one host's washd (or all).
+
+On **macOS**, `wash service install` writes a LaunchAgent
+(`~/Library/LaunchAgents/local.wash.washd.plist`) and loads it: washd starts
+at login, restarts after a crash (not after `wash down`), and leaves the
+sessions running when it stops. washd's runtime directory there is
+`~/.local/state/wash/run` (launchd jobs and terminals do not share `$TMPDIR`),
+and accounts are looked up in Directory Services (`dscl`), uid 501 and up.
+
+## Sessions on other hosts
+
+One washd can run sessions on several machines. The **+** button lists this
+host and washd's ssh hosts; `wash sessions new --host HOST` does the same from
+the CLI. Tabs for other hosts are named after the host (`ca`, `ca 2`, ...),
+and switching servers is switching tabs.
+
+* **Which hosts.** By default, the first alias of every `Host` line in
+  `~/.ssh/config` (and files it `Include`s), skipping patterns.
+  `wash config set hosts ca,ca-mini` picks them instead, `ssh` goes back to
+  the default, and `none` turns this off. The browser can only name a host
+  on that list, so it cannot pass ssh options of its own.
+* **How.** washd runs `ssh -T -o BatchMode=yes HOST` with wosh's push stub,
+  the way `wosh HOST` starts a session: it uses a protocol-compatible wosh
+  installed there (PATH, `~/bin`, `~/.local/bin`, `~/go/bin`), or else runs its
+  own build for that platform from memory (the same builds chained hops use:
+  `dist/` next to washd's wosh). It never installs or upgrades anything on
+  the other host. The relay that started the daemon carries washd's warm
+  start, then exits; the session is recorded like an adopted chained hop,
+  and every later offer goes over a new ssh to the perl attach stub on the
+  daemon's socket.
+* **Needs.** ssh to HOST must work without prompts (keys or the agent
+  `wash up` / `wash agent` hands to washd; known host key), and perl there
+  (else an installed wosh is required). The browser connects to the
+  session over WebRTC directly (STUN/TURN as configured) or through washd's
+  bridge, so washd or the browser must be able to reach HOST.
+* The sessions keep running on HOST while washd restarts; killing one hangs
+  it up over the wosh protocol.
 
 ## Terminal
 

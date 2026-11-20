@@ -1,4 +1,5 @@
-// Package link is the RPC between washd (one per unix user) and wash-web.
+// Package link is the RPC between washd (one per unix user and host) and
+// wash-web.
 //
 // washd dials wash-web (wss://host/api/link, bearer token from enrollment)
 // and keeps that WebSocket open. Either side may send requests; both reuse
@@ -9,6 +10,7 @@ package link
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -31,7 +33,14 @@ const (
 	OpChallenge = "challenge" // -> Nonce
 	OpVerify    = "verify"    // VerifyReq -> Ticket
 	OpAttach    = "attach"    // AttachReq -> {}
+	// OpKeyRevoked: another washd of this user revoked a passkey (`wash keys
+	// revoke`): drop it here too and close its browsers. KeyRef -> {}
+	OpKeyRevoked = "key.revoked"
 )
+
+// HostHeader carries washd's host name on its link. wash-web uses it to
+// name a washd enrolled before multi-host support (its token has no host).
+const HostHeader = "X-Wash-Host"
 
 // Ops manager -> web.
 const (
@@ -80,6 +89,22 @@ type Nonce struct {
 type VerifyReq struct {
 	Assertion json.RawMessage `json:"assertion"` // browser's PublicKeyCredential JSON
 	Remote    string          `json:"remote,omitempty"`
+	// Nonces: with several washds for the user, every one's nonce (in this
+	// order). The challenge's second half is then MixNonces(Nonces), so one
+	// passkey assertion answers them all; each washd finds its own nonce in
+	// the list. Empty: a single washd, whose nonce is the second half itself.
+	Nonces [][]byte `json:"nonces,omitempty"`
+}
+
+// MixNonces is the challenge's second half when several washds take part.
+func MixNonces(nonces [][]byte) []byte {
+	h := sha256.New()
+	h.Write([]byte("wash multi-manager challenge v1\x00"))
+	for _, n := range nonces {
+		h.Write([]byte{byte(len(n))})
+		h.Write(n)
+	}
+	return h.Sum(nil)
 }
 
 type Ticket struct {
@@ -127,6 +152,7 @@ type RegWindow struct {
 
 type Info struct {
 	User    string `json:"user"`
+	Host    string `json:"host,omitempty"` // the name wash-web knows this washd by
 	Version string `json:"version"`
 }
 

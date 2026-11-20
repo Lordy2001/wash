@@ -101,7 +101,9 @@ func dialDaemon(ctx context.Context, signal signalFunc, offer wosh.Msg, onMsg fu
 // primary device attributes query (ESC [ c): fish and other programs send
 // it at startup and wait for the answer (fish warns after 2 s without one).
 func warmStart(ctx context.Context, s *Session, offer wosh.Msg, signal signalFunc) error {
-	offer.ICE, offer.Relay = nil, false // same host
+	if s.Remote == nil {
+		offer.ICE, offer.Relay = nil, false // same host
+	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	frames := make(chan []byte, 64)

@@ -41,8 +41,10 @@ function resizeFrame(cols, rows) {
 }
 
 // Relative to the page, so the site works under a path prefix (e.g. /wash/).
-function wsURL(ticket) {
-  const u = new URL(`api/ws?ticket=${encodeURIComponent(ticket)}`, location.href);
+// host: which of the user's washds (one per host) the socket goes to.
+function wsURL(ticket, host) {
+  const q = `ticket=${encodeURIComponent(ticket)}` + (host ? `&host=${encodeURIComponent(host)}` : '');
+  const u = new URL(`api/ws?${q}`, location.href);
   u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   return u.href;
 }
@@ -128,9 +130,9 @@ class OSCFilter {
 }
 
 // open a handed-over socket and wait for washd's hello
-function openSocket(ticket) {
+function openSocket(ticket, host = '') {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsURL(ticket));
+    const ws = new WebSocket(wsURL(ticket, host));
     ws.binaryType = 'arraybuffer';
     let done = false;
     const timer = setTimeout(() => { if (!done) { done = true; ws.close(); reject(new Error('timed out connecting to the shell manager')); } }, 20000);
@@ -159,8 +161,11 @@ function tabID() {
   } catch { return randomHex(8); }
 }
 
+// ManagerConn is the page's connection to one washd (host: the name wash-web
+// knows it by; '' when the site has a single washd for this user).
 export class ManagerConn {
-  constructor() {
+  constructor(host = '') {
+    this.host = host;
     this.ws = null; this.hello = null; this.rid = 0; this.pending = new Map();
     this.onSessions = () => {}; this.onState = () => {}; this.onAuthLost = () => {};
     this.cid = tabID(); // this browser tab, across reloads: the daemon knows it as one client
@@ -168,7 +173,7 @@ export class ManagerConn {
   }
 
   async connect(ticket) {
-    const { ws, hello } = await openSocket(ticket);
+    const { ws, hello } = await openSocket(ticket, this.host);
     this.attach(ws, hello);
   }
 
@@ -207,7 +212,7 @@ export class ManagerConn {
       const t = this.resume;
       this.resume = null; // single use
       try {
-        const { ws, hello } = await openSocket(t);
+        const { ws, hello } = await openSocket(t, this.host);
         this.attach(ws, hello);
         return;
       } catch (e) {
@@ -350,7 +355,7 @@ async function webrtcTransport(mgr, signal, onFrame, onDown) {
 
 async function bridgeTransport(mgr, id, size, rxOut, take, onFrame, onDown) {
   const { ticket } = await mgr.request({ t: 'ticket' });
-  const { ws } = await openSocket(ticket);
+  const { ws } = await openSocket(ticket, mgr.host);
   let down = false;
   await new Promise((resolve, reject) => {
     ws.onmessage = (ev) => {

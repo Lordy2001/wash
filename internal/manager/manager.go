@@ -182,7 +182,7 @@ func wsURL(base, path string) string {
 func (m *Manager) dial(ctx context.Context, path string) (*websocket.Conn, error) {
 	c, resp, err := websocket.Dial(ctx, wsURL(m.creds.URL, path), &websocket.DialOptions{
 		HTTPClient: m.httpClient(),
-		HTTPHeader: http.Header{"Authorization": {"Bearer " + m.creds.Token}},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + m.creds.Token}, link.HostHeader: {m.creds.HostName()}},
 	})
 	if err != nil && resp != nil && resp.StatusCode == http.StatusUnauthorized {
 		return nil, errors.New("wash-web rejected our token (enroll again: `wash enroll`)")
@@ -247,13 +247,27 @@ func (m *Manager) handleLink(ctx context.Context, op string, data json.RawMessag
 		if err := json.Unmarshal(data, &req); err != nil {
 			return nil, err
 		}
-		tk, key, err := m.verify(req.Assertion)
+		tk, key, err := m.verify(req.Assertion, req.Nonces)
 		if err != nil {
 			log.Printf("login from %s rejected: %v", req.Remote, err)
 			return nil, err
 		}
 		log.Printf("login from %s with passkey %s verified", req.Remote, key)
 		return link.Ticket{Ticket: tk}, nil
+	case link.OpKeyRevoked:
+		// revoked by this user's washd on another host: exact ids only
+		var ref link.KeyRef
+		if err := json.Unmarshal(data, &ref); err != nil || len(ref.ID) < 12 {
+			return nil, errors.New("bad key ref")
+		}
+		full, err := m.dropKey(ref.ID)
+		if err != nil {
+			return nil, err
+		}
+		if full != "" {
+			log.Printf("passkey %s revoked on another host: removed here too", full)
+		}
+		return struct{}{}, nil
 	case link.OpAttach:
 		var req link.AttachReq
 		if err := json.Unmarshal(data, &req); err != nil {
@@ -285,8 +299,10 @@ func (m *Manager) newNonce() (link.Nonce, error) {
 }
 
 // verify checks an assertion against keys.json and a nonce we issued; on
-// success it returns a single-use login ticket.
-func (m *Manager) verify(assertion []byte) (string, string, error) {
+// success it returns a single-use login ticket. nonces: with several washds
+// for this user, all their nonces, which the challenge commits to
+// (link.MixNonces); ours must be one of them.
+func (m *Manager) verify(assertion []byte, nonces [][]byte) (string, string, error) {
 	parsed, err := protocol.ParseCredentialRequestResponseBytes(assertion)
 	if err != nil {
 		return "", "", fmt.Errorf("bad assertion: %w", err)
@@ -295,7 +311,25 @@ func (m *Manager) verify(assertion []byte) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	nk := hex.EncodeToString(ch[passkey.NonceLen:])
+	mine := ch[passkey.NonceLen:]
+	if len(nonces) > 0 {
+		if len(nonces) > 64 || subtle.ConstantTimeCompare(link.MixNonces(nonces), mine) != 1 {
+			return "", "", errors.New("manager challenge does not match the nonce list")
+		}
+		mine = nil
+		m.mu.Lock()
+		for _, n := range nonces {
+			if _, ok := m.nonces[hex.EncodeToString(n)]; ok {
+				mine = n
+				break
+			}
+		}
+		m.mu.Unlock()
+		if mine == nil {
+			return "", "", errors.New("unknown or expired manager challenge")
+		}
+	}
+	nk := hex.EncodeToString(mine)
 	m.mu.Lock()
 	exp, ok := m.nonces[nk]
 	delete(m.nonces, nk)
@@ -369,6 +403,38 @@ func (m *Manager) takeTicket(tok string) (*ticket, error) {
 }
 
 // --- keys (CLI) -----------------------------------------------------------------
+
+// dropKey removes a passkey (id or a prefix of 4+) from keys.json and closes
+// the browsers that signed in with it; it returns the full id ("" if absent).
+func (m *Manager) dropKey(id string) (string, error) {
+	keys, err := loadKeys()
+	if err != nil {
+		return "", err
+	}
+	var keep []LocalKey
+	full := ""
+	for _, k := range keys {
+		if strings.HasPrefix(k.ID, id) && len(id) >= 4 {
+			full = k.ID
+			continue
+		}
+		keep = append(keep, k)
+	}
+	if full == "" {
+		return "", nil
+	}
+	if err := saveKeys(keep); err != nil {
+		return "", err
+	}
+	m.mu.Lock()
+	for c := range m.conns {
+		if c.key == full {
+			c.close("passkey revoked")
+		}
+	}
+	m.mu.Unlock()
+	return full, nil
+}
 
 // KeyView merges the web side's list with keys.json.
 type KeyView struct {
@@ -491,30 +557,9 @@ func (m *Manager) OpenRegistration(ctx context.Context, d time.Duration) (link.R
 // Revoke removes a key locally (immediately effective for washd) and on
 // wash-web; open browser connections that logged in with it are closed.
 func (m *Manager) Revoke(ctx context.Context, id string) error {
-	keys, err := loadKeys()
+	full, err := m.dropKey(id)
 	if err != nil {
 		return err
-	}
-	var keep []LocalKey
-	full := ""
-	for _, k := range keys {
-		if strings.HasPrefix(k.ID, id) && len(id) >= 4 {
-			full = k.ID
-			continue
-		}
-		keep = append(keep, k)
-	}
-	if full != "" {
-		if err := saveKeys(keep); err != nil {
-			return err
-		}
-		m.mu.Lock()
-		for c := range m.conns {
-			if c.key == full {
-				c.close("passkey revoked")
-			}
-		}
-		m.mu.Unlock()
 	}
 	p, werr := m.web()
 	if werr == nil {
@@ -536,6 +581,7 @@ func (m *Manager) Revoke(ctx context.Context, id string) error {
 // Status is `wash status`.
 type Status struct {
 	User     string        `json:"user"`
+	Host     string        `json:"host"` // the name wash-web knows this washd by
 	URL      string        `json:"url"`
 	Linked   bool          `json:"linked"`
 	LinkErr  string        `json:"link_err,omitempty"`
@@ -551,6 +597,6 @@ func (m *Manager) Status() Status {
 	ss := m.List()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return Status{User: m.user, URL: m.creds.URL, Linked: m.peer != nil, LinkErr: m.linkErr,
+	return Status{User: m.user, Host: m.creds.HostName(), URL: m.creds.URL, Linked: m.peer != nil, LinkErr: m.linkErr,
 		Since: m.started, PID: os.Getpid(), Version: Version, Sessions: ss, Browsers: len(m.conns), Agent: m.agentSock}
 }

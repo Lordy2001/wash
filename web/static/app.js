@@ -88,7 +88,7 @@ async function signIn(ev) {
     setMsg(msg, 'Verifying with the website and your shell manager…');
     const fin = await api(`api/login/finish?id=${begin.id}`, credentialJSON(cred));
     setMsg(msg, 'Connecting…');
-    await startApp(fin.ticket);
+    await startApp(fin);
   } catch (e) {
     setMsg(msg, e.name === 'NotAllowedError' ? 'Passkey request was cancelled or timed out. No passkey for this user here? Create one, then approve it with `wash keys approve ID` on the host.'
       : e.name === 'SecurityError' ? 'The browser blocked passkeys here (untrusted certificate?). Install the wash CA below, then reload.' : e.message, 'err');
@@ -133,8 +133,10 @@ function defaultDeviceName() {
 // --- main app -------------------------------------------------------------------
 
 const app = {
-  mgr: null,
-  sessions: [],  // from washd
+  mgrs: new Map(), // washd host -> ManagerConn: the user's washds (one per host) that accepted the sign-in
+  lists: new Map(), // ManagerConn -> its session list
+  notes: [],     // washds that refused the sign-in (shown next to the connection state)
+  sessions: [],  // all washds' sessions; s.washd names the washd that owns s
   open: new Map(), // id -> view {id, box, layers: [{ws, term, el, status, host}]}
   mods: { ctrl: 0, alt: 0 }, // sticky Ctrl/Alt from the extra-keys bar (shared by all terminals)
   active: null,
@@ -146,20 +148,93 @@ const theme = {
     '#5c6370', '#ff7b86', '#b5e890', '#ffd68a', '#82c4ff', '#de9bf0', '#7fd6e0', '#ffffff'],
 };
 
-async function startApp(ticket) {
-  const mgr = new ManagerConn();
-  mgr.onSessions = (list) => { app.sessions = list; renderTabs(); };
-  mgr.onState = (s) => { $('#mgr-state').textContent = s === 'connected' ? '' : s; };
-  mgr.onAuthLost = (reason) => { teardown(); show('login'); setMsg($('#login-msg'), `Signed out: ${reason}`, 'err'); };
-  await mgr.connect(ticket);
-  app.mgr = mgr;
-  $('#who').textContent = $('#menu-who').textContent = `${mgr.hello.user}@${mgr.hello.host}`;
+// startApp connects to every washd that accepted the sign-in (fin.managers;
+// a site from before multi-host gives just fin.ticket).
+async function startApp(fin) {
+  const all = fin.managers || [{ host: '', ticket: fin.ticket }];
+  app.notes = all.filter((m) => !m.ticket).map((m) => `${m.host}: ${m.err || 'refused'}`);
+  const res = await Promise.allSettled(all.filter((m) => m.ticket).map((m) => connectManager(m.host, m.ticket)));
+  if (!app.mgrs.size) {
+    const why = res.map((r) => r.reason && r.reason.message).filter(Boolean).concat(app.notes);
+    throw new Error(why.join('; ') || 'no shell manager accepted the sign-in');
+  }
+  for (const r of res) if (r.status === 'rejected') app.notes.push(r.reason.message);
+  renderWho();
+  renderMgrState();
   show('main');
   const want = store.get('wash.active');
   const ids = app.sessions.map((s) => s.id);
   if (want && ids.includes(want)) activate(want);
   else if (ids.length) activate(ids[ids.length - 1]);
-  else newSession();
+  else newSession(firstMgr());
+}
+
+async function connectManager(host, ticket) {
+  const mgr = new ManagerConn(host);
+  mgr.state = 'connecting';
+  mgr.onSessions = (list) => { app.lists.set(mgr, list); mergeSessions(); };
+  mgr.onState = (s) => { mgr.state = s; renderMgrState(); };
+  mgr.onAuthLost = (reason) => dropManager(mgr, reason);
+  app.mgrs.set(host, mgr);
+  try {
+    await mgr.connect(ticket);
+  } catch (e) {
+    app.mgrs.delete(host); app.lists.delete(mgr);
+    throw new Error(`${host || 'shell manager'}: ${e.message}`);
+  }
+  return mgr;
+}
+
+// mgrName: the washd's host as wash-web knows it (else as it says itself).
+const mgrName = (mgr) => mgr.host || (mgr.hello && mgr.hello.host) || 'shell manager';
+const firstMgr = () => app.mgrs.values().next().value || null;
+const mgrOf = (s) => (s && app.mgrs.get(s.washd)) || (app.mgrs.size === 1 ? firstMgr() : null);
+// activeMgr: the washd of the shown tab (new sessions start there)
+function activeMgr() {
+  const o = app.active && app.open.get(app.active);
+  return (o && o.mgr) || firstMgr();
+}
+
+function mergeSessions() {
+  const out = [];
+  for (const [host, mgr] of app.mgrs) {
+    for (const s of app.lists.get(mgr) || []) { s.washd = host; out.push(s); }
+  }
+  app.sessions = out;
+  renderTabs();
+}
+
+// dropManager: one washd signed this page out (revoked key, washd gone for
+// good). Its tabs close; the page stays signed in while another washd is left.
+function dropManager(mgr, reason) {
+  if (app.mgrs.get(mgr.host) !== mgr) return;
+  if (app.mgrs.size === 1) {
+    teardown(); show('login'); setMsg($('#login-msg'), `Signed out: ${reason}`, 'err');
+    return;
+  }
+  mgr.close();
+  app.mgrs.delete(mgr.host); app.lists.delete(mgr);
+  mergeSessions(); // first, so closing its tabs activates one of another washd
+  for (const o of [...app.open.values()]) if (o.mgr === mgr) closeView(o.id, false);
+  app.notes.push(`${mgrName(mgr)}: ${reason}`);
+  renderWho(); renderMgrState();
+}
+
+function renderWho() {
+  const m = firstMgr();
+  const user = m && m.hello ? m.hello.user : '';
+  const hosts = [...app.mgrs.values()].map(mgrName);
+  $('#who').textContent = $('#menu-who').textContent = `${user}@${hosts.join(', ')}`;
+}
+
+function renderMgrState() {
+  const multi = app.mgrs.size > 1;
+  const bad = [...app.mgrs.values()].filter((m) => m.state && m.state !== 'connected')
+    .map((m) => (multi ? `${mgrName(m)}: ` : '') + m.state);
+  const el = $('#mgr-state');
+  el.textContent = bad.join(' · ');
+  el.title = app.notes.length ? `not connected: ${app.notes.join('; ')}` : '';
+  if (!bad.length && app.notes.length) el.textContent = `${app.notes.length} host${app.notes.length > 1 ? 's' : ''} unavailable`;
 }
 
 // A tab ("view") is a stack of layers: the washd session at the bottom and
@@ -170,14 +245,16 @@ const top = (o) => o.layers[o.layers.length - 1];
 function teardown() {
   for (const o of app.open.values()) for (const l of o.layers) { l.ws.close(); l.term.dispose(); l.el.remove(); }
   app.open.clear(); app.active = null;
-  if (app.mgr) app.mgr.close();
-  app.mgr = null;
+  for (const m of app.mgrs.values()) m.close();
+  app.mgrs.clear(); app.lists.clear(); app.notes = []; app.sessions = [];
 }
 
 function tabLabel(s) {
   const o = app.open.get(s.id);
   const hops = o ? o.layers.slice(1).map((l) => l.host) : (s.hops || []).map((h) => h.host);
-  return [s.name, ...hops].join(' → ');
+  // with several washds, say which one runs a local session ("shell 1 · ca-mini")
+  const name = app.mgrs.size > 1 && !s.remote && s.washd ? `${s.name} · ${s.washd}` : s.name;
+  return [name, ...hops].join(' → ');
 }
 
 function renderTabs() {
@@ -187,7 +264,8 @@ function renderTabs() {
     const t = document.createElement('div');
     t.className = 'tab' + (s.id === app.active ? ' active' : '');
     t.dataset.id = s.id;
-    const where = s.remote ? `on ${s.remote.host} via ssh ${s.remote.route.map((h) => h.join(' ')).join(' → ')}` : `pid ${s.pid}`;
+    const where = (s.remote ? `on ${s.remote.host} via ssh ${s.remote.route.map((h) => h.join(' ')).join(' → ')}` : `pid ${s.pid}`)
+      + (app.mgrs.size > 1 ? ` (washd on ${s.washd})` : '');
     t.title = `${s.name}\nid ${s.id}\n${where}\nstarted ${new Date(s.created).toLocaleString()}\ndouble-click to rename`;
     const name = document.createElement('span');
     name.className = 'name';
@@ -274,11 +352,11 @@ function openView(id, take = false) {
   const box = document.createElement('div');
   box.className = 'view-box';
   $('#terms').append(box);
-  const o = { id, box, layers: [] };
   const sess = app.sessions.find((x) => x.id === id);
+  const o = { id, box, layers: [], mgr: mgrOf(sess) || activeMgr() };
   const root = newLayer(o, sess ? sess.name : id);
-  root.ws = new WoshSession(app.mgr, id, root.term, {
-    transport: app.mgr.hello.transport,
+  root.ws = new WoshSession(o.mgr, id, root.term, {
+    transport: o.mgr.hello.transport,
     onState: (s) => {
       root.status = statusText(s);
       if (s.error) console.warn('wash session', id, s.error);
@@ -291,7 +369,7 @@ function openView(id, take = false) {
       root.status = 'exited';
       while (o.layers.length > 1) popLayer(o, false);
       const sess = app.sessions.find((x) => x.id === o.id);
-      if (sess && sess.remote) app.mgr.request({ t: 'kill', id: o.id }).catch(() => {}); // drop the record
+      if (sess && sess.remote) o.mgr.request({ t: 'kill', id: o.id }).catch(() => {}); // drop the record
     },
   });
   root.ws.take = take;
@@ -384,17 +462,17 @@ async function adoptHop(o, l, hop, adopt) {
   const parent = o.layers[0];
   o.adopting = true; // the session list may drop the parent before our reply
   try {
-    const r = await app.mgr.request({ t: 'adopt', id: parent.ws.id, hop, sock: adopt.sock, route: adopt.route });
+    const r = await o.mgr.request({ t: 'adopt', id: parent.ws.id, hop, sock: adopt.sock, route: adopt.route });
     const oldId = o.id;
     parent.ws.close(); parent.term.dispose(); parent.el.remove(); // washd ends it; no bye
     o.layers = o.layers.filter((x) => x !== parent);
     l.ws.parent = null;                       // signaling now via washd (ssh route)
-    l.ws.mode = app.mgr.hello.transport;      // and washd can bridge if WebRTC fails
+    l.ws.mode = o.mgr.hello.transport;        // and washd can bridge if WebRTC fails
     l.root = true;
     app.open.delete(oldId);
     o.id = r.session.id;
     app.open.set(o.id, o);
-    if (!app.sessions.some((x) => x.id === o.id)) app.sessions.push(r.session);
+    if (!app.sessions.some((x) => x.id === o.id)) app.sessions.push({ ...r.session, washd: o.mgr.host });
     if (app.active === oldId) { app.active = o.id; store.set('wash.active', o.id); }
   } catch (e) {
     console.warn('wash: adopt failed, keeping the parent as signaling path:', e.message);
@@ -402,7 +480,7 @@ async function adoptHop(o, l, hop, adopt) {
     const why = e.message.replace(/^ssh route not usable non-interactively \((.*)\); keeping.*$/s, '$1');
     l.term.write(`\r\n\x1b[2m[wash: keeping ${parent.host || 'the parent session'} as the link to ${hop.host}: ` +
       `washd cannot reach it on its own (${why}). Every ssh hop must work non-interactively (keys or agent, known host keys).]\x1b[0m\r\n`);
-    app.mgr.request({ t: 'hop.add', id: o.id, hop }).catch(() => {});
+    o.mgr.request({ t: 'hop.add', id: o.id, hop }).catch(() => {});
   } finally {
     o.adopting = false;
     renderTabs();
@@ -415,7 +493,7 @@ function pushHop(o, hop, isNew, adopt = null) {
   if (!parent) return;
   const l = newLayer(o, hop.host);
   l.host = hop.host;
-  l.ws = new WoshSession(app.mgr, hop.id, l.term, {
+  l.ws = new WoshSession(o.mgr, hop.id, l.term, {
     parent: parent.ws, key: hop.key,
     onState: (s) => {
       l.status = statusText(s) + (l.ws.role === 'view' ? ' · view' : '') + (l.root ? '' : ' ↪');
@@ -426,7 +504,7 @@ function pushHop(o, hop, isNew, adopt = null) {
       if (l.root) { // adopted: it is the tab's session now
         l.term.write(`\r\n\x1b[2m[session ended${code != null ? ` with status ${code}` : ''}${why ? `: ${why}` : ''}]\x1b[0m\r\n`);
         l.status = 'exited';
-        app.mgr.request({ t: 'kill', id: o.id }).catch(() => {}); // forget the remote record
+        o.mgr.request({ t: 'kill', id: o.id }).catch(() => {}); // forget the remote record
         return;
       }
       if (why) console.warn('wash hop', hop.host, why);
@@ -436,7 +514,7 @@ function pushHop(o, hop, isNew, adopt = null) {
   });
   l.ws.onSignal = (m) => onSignal(o, l, m);
   o.layers.push(l);
-  if (isNew) app.mgr.request({ t: 'hop.add', id: o.id, hop }).catch((e) => console.warn('hop.add', e.message));
+  if (isNew) o.mgr.request({ t: 'hop.add', id: o.id, hop }).catch((e) => console.warn('hop.add', e.message));
   renderTabs();
   showTop(o);
   l.ws.connect();
@@ -455,7 +533,7 @@ function popLayer(o, notify, l = top(o), bye = notify) {
       setTimeout(() => parent.ws.redraw(), 300);
     }
   }
-  if (notify) app.mgr.request({ t: 'hop.del', id: o.id, name: l.ws.id }).catch(() => {});
+  if (notify) o.mgr.request({ t: 'hop.del', id: o.id, name: l.ws.id }).catch(() => {});
   renderTabs();
   showTop(o);
 }
@@ -482,25 +560,70 @@ function closeView(id, kill) {
   }
 }
 
-async function newSession() {
+// newSession starts a session on mgr's host, or (host) on one of that
+// washd's ssh hosts.
+async function newSession(mgr = activeMgr(), host = '') {
+  if (!mgr) return;
   const o = app.active && app.open.get(app.active);
   const cols = o ? top(o).term.cols : 80, rows = o ? top(o).term.rows : 24;
+  const state = $('#mgr-state');
+  const where = host || (app.mgrs.size > 1 ? mgrName(mgr) : '');
+  if (where) state.textContent = `starting on ${where}…`;
   try {
-    const r = await app.mgr.request({ t: 'new', cols, rows });
-    if (!app.sessions.some((s) => s.id === r.session.id)) app.sessions.push(r.session);
+    // another host: ssh, maybe a wosh upload, then a warm start (washd allows 90 s)
+    const r = await mgr.request(host ? { t: 'new', cols, rows, host } : { t: 'new', cols, rows }, host ? 95000 : 30000);
+    if (!app.sessions.some((s) => s.id === r.session.id)) app.sessions.push({ ...r.session, washd: mgr.host });
     activate(r.session.id);
-  } catch (e) { alert(`Could not start a session: ${e.message}`); }
+  } catch (e) { alert(`Could not start a session${where ? ' on ' + where : ''}: ${e.message}`); }
+  finally { if (where && state.textContent.startsWith('starting on')) renderMgrState(); }
+}
+
+// hostMenu: "+" offers each washd's own host and its ssh hosts (`wash config
+// set hosts`); with one washd and no ssh hosts it starts a session at once.
+function hostMenu(open) {
+  const m = $('#host-menu');
+  const mgrs = [...app.mgrs.values()].filter((x) => x.hello);
+  if (open && mgrs.length === 1 && !(mgrs[0].hello.hosts || []).length) { newSession(mgrs[0]); return; }
+  if (m.hidden === !open) return;
+  m.hidden = !open;
+  $('#new-btn').setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  m.textContent = '';
+  const head = (text) => {
+    const d = document.createElement('div');
+    d.className = 'menu-head';
+    d.textContent = text;
+    m.append(d);
+  };
+  const item = (label, note, mgr, host) => {
+    const b = document.createElement('button');
+    b.className = 'menu-item';
+    b.setAttribute('role', 'menuitem');
+    b.textContent = label;
+    if (note) { const d = document.createElement('span'); d.className = 'dim'; d.textContent = note; b.append(d); }
+    b.onclick = () => { hostMenu(false); newSession(mgr, host); };
+    m.append(b);
+  };
+  head('New session on');
+  for (const mgr of mgrs) {
+    const name = mgrName(mgr);
+    item(name, mgrs.length > 1 ? 'washd' : 'this host', mgr, '');
+    for (const h of mgr.hello.hosts || []) if (!app.mgrs.has(h)) item(h, `ssh from ${name}`, mgr, h);
+  }
+  const btn = $('#new-btn');
+  m.style.left = `${Math.max(4, Math.min(btn.offsetLeft, window.innerWidth - m.offsetWidth - 4))}px`;
+  m.querySelector('.menu-item').focus();
 }
 
 async function killSession(s) {
   if (!confirm(`Kill session “${s.name}”? Its processes get SIGHUP.`)) return;
-  try { await app.mgr.request({ t: 'kill', id: s.id }); closeView(s.id, false); } catch (e) { alert(e.message); }
+  try { await mgrOf(s).request({ t: 'kill', id: s.id }); closeView(s.id, false); } catch (e) { alert(e.message); }
 }
 
 async function renameSession(s) {
   const name = prompt('Session name', s.name);
   if (!name || name === s.name) return;
-  try { await app.mgr.request({ t: 'rename', id: s.id, name }); } catch (e) { alert(e.message); }
+  try { await mgrOf(s).request({ t: 'rename', id: s.id, name }); } catch (e) { alert(e.message); }
 }
 
 // --- touch screens: extra keys, on-screen keyboard -------------------------------
@@ -605,21 +728,23 @@ async function boot() {
   $('#reg-form').onsubmit = createPasskey;
   $('#to-reg').onclick = (e) => { e.preventDefault(); $('#reg-user').value = $('#login-user').value; show('register'); };
   for (const b of document.querySelectorAll('.to-login')) b.onclick = (e) => { e.preventDefault(); show('login'); };
-  $('#new-btn').onclick = () => newSession();
+  $('#new-btn').onclick = (e) => { e.stopPropagation(); menu(false); hostMenu($('#host-menu').hidden); };
+  $('#host-menu').onclick = (e) => e.stopPropagation();
   $('#zoom-in').onclick = () => zoom(1);
   $('#zoom-out').onclick = () => zoom(-1);
   const signOut = async () => { menu(false); teardown(); await api('api/logout', {}).catch(() => {}); show('login'); setMsg($('#login-msg'), 'Signed out.'); };
   $('#logout').onclick = signOut;
   // phones: text size and sign out live in the ☰ menu
-  $('#menu-btn').onclick = (e) => { e.stopPropagation(); menu($('#menu').hidden); };
+  $('#menu-btn').onclick = (e) => { e.stopPropagation(); hostMenu(false); menu($('#menu').hidden); };
   $('#m-zoom-in').onclick = () => zoom(1);
   $('#m-zoom-out').onclick = () => zoom(-1);
   $('#m-logout').onclick = signOut;
   $('#menu').onclick = (e) => e.stopPropagation();
-  document.addEventListener('click', () => menu(false));
+  document.addEventListener('click', () => { menu(false); hostMenu(false); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#host-menu').hidden) { e.preventDefault(); hostMenu(false); } });
   document.addEventListener('keydown', (e) => {
-    if (!e.ctrlKey || !e.shiftKey || !app.mgr) return;
-    if (e.code === 'KeyT') { e.preventDefault(); newSession(); }
+    if (!e.ctrlKey || !e.shiftKey || !app.mgrs.size) return;
+    if (e.code === 'KeyT') { e.preventDefault(); newSession(activeMgr()); }
     if (e.code === 'PageDown' || e.code === 'PageUp') {
       e.preventDefault();
       const i = app.sessions.findIndex((s) => s.id === app.active);

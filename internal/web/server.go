@@ -20,6 +20,7 @@ import (
 	"net/netip"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -60,8 +61,8 @@ type Server struct {
 	mu         sync.Mutex
 	ceremonies map[string]*ceremony
 	sessions   map[string]*webSession
-	links      map[string]*link.Peer // user -> manager link
-	waiters    map[string]*waiter    // sid -> pending dial-back
+	links      map[string]map[string]*link.Peer // user -> washd host -> link
+	waiters    map[string]*waiter               // sid -> pending dial-back
 	limits     map[string]*bucket
 	regOpen    map[string]time.Time // user -> passkey creation allowed until
 	secret     []byte               // keys decoy login challenges
@@ -78,6 +79,15 @@ type ceremony struct {
 	expires  time.Time
 	attempts int
 	decoy    bool // login for a user without approved passkeys: always fails
+	// managers: the washds asked for a nonce at /begin (login), in the order
+	// their nonces went into the challenge
+	managers []managerNonce
+}
+
+type managerNonce struct {
+	host  string
+	peer  *link.Peer
+	nonce []byte
 }
 
 type webSession struct {
@@ -87,6 +97,7 @@ type webSession struct {
 
 type waiter struct {
 	user string
+	host string // the washd that must dial back
 	ch   chan *dialBack
 }
 
@@ -116,7 +127,7 @@ func New(cfg Config, db *DB) *Server {
 		regOpen:    map[string]time.Time{},
 		ceremonies: map[string]*ceremony{},
 		sessions:   map[string]*webSession{},
-		links:      map[string]*link.Peer{},
+		links:      map[string]map[string]*link.Peer{},
 		waiters:    map[string]*waiter{},
 		limits:     map[string]*bucket{},
 		uploads:    map[string]*upload{},
@@ -430,10 +441,36 @@ func (s *Server) sessionUser(r *http.Request) (string, bool) {
 	return v.user, true
 }
 
-func (s *Server) linkFor(user string) *link.Peer {
+// hostLink is one connected washd of a user.
+type hostLink struct {
+	host string
+	peer *link.Peer
+}
+
+// linksFor lists user's connected washds, by host name.
+func (s *Server) linksFor(user string) []hostLink {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.links[user]
+	var out []hostLink
+	for h, p := range s.links[user] {
+		out = append(out, hostLink{h, p})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].host < out[j].host })
+	return out
+}
+
+// linkFor finds user's washd on host; "" picks the only one.
+func (s *Server) linkFor(user, host string) (string, *link.Peer) {
+	ls := s.linksFor(user)
+	if host == "" && len(ls) == 1 {
+		return ls[0].host, ls[0].peer
+	}
+	for _, l := range ls {
+		if l.host == host {
+			return l.host, l.peer
+		}
+	}
+	return "", nil
 }
 
 func (s *Server) takeCeremony(id, kind string) (*ceremony, bool) {
@@ -669,11 +706,14 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 			lu.Creds = append(lu.Creds, c.cred)
 		}
 	}
-	// webNonce ‖ managerNonce. Without a manager (or for a decoy) the second
-	// half stays random: the login then fails at /finish, after the passkey.
+	// webNonce ‖ managerNonce: the nonce of the user's washd, or with several
+	// washds (one per host) a hash of all their nonces (link.MixNonces). Without
+	// a manager (or for a decoy) the second half stays random: the login then
+	// fails at /finish, after the passkey.
 	challenge := make([]byte, 2*passkey.NonceLen)
 	_, _ = rand.Read(challenge)
 	decoy := len(allow) == 0
+	var managers []managerNonce
 	if decoy {
 		cred, handle := s.decoy(wa.Config.RPID, user)
 		lu.Handle, lu.Creds = handle, []webauthn.Credential{cred}
@@ -683,15 +723,17 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, "database error")
 			return
 		}
-		if lk := s.linkFor(user); lk != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-			var mn link.Nonce
-			if err := lk.Call(ctx, link.OpChallenge, nil, &mn); err == nil && len(mn.Nonce) == passkey.NonceLen {
-				copy(challenge[passkey.NonceLen:], mn.Nonce)
-			} else {
-				log.Printf("login %s: shell manager gave no challenge: %v", user, err)
+		managers = s.managerNonces(r.Context(), user)
+		switch len(managers) {
+		case 0:
+		case 1:
+			copy(challenge[passkey.NonceLen:], managers[0].nonce)
+		default:
+			var ns [][]byte
+			for _, mn := range managers {
+				ns = append(ns, mn.nonce)
 			}
-			cancel()
+			copy(challenge[passkey.NonceLen:], link.MixNonces(ns))
 		}
 	}
 	opts, sess, err := wa.BeginLogin(lu,
@@ -705,7 +747,7 @@ func (s *Server) handleLoginBegin(w http.ResponseWriter, r *http.Request) {
 	id := newID()
 	s.mu.Lock()
 	s.ceremonies[id] = &ceremony{kind: "login", user: user, rpID: wa.Config.RPID, origin: origin,
-		session: *sess, expires: time.Now().Add(ceremonyTTL), decoy: decoy}
+		session: *sess, expires: time.Now().Add(ceremonyTTL), decoy: decoy, managers: managers}
 	s.mu.Unlock()
 	writeJSON(w, 200, map[string]any{"id": id, "options": opts})
 }
@@ -764,18 +806,54 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.db.Used(cred)
-	// the manager verifies the same assertion against its own key store
-	lk := s.linkFor(c.user)
-	if lk == nil {
+	// every washd verifies the same assertion against its own key store; the
+	// ones that accept it give this browser a ticket to connect to them
+	if len(c.managers) == 0 {
 		fail(w, 503, fmt.Sprintf("no shell manager is running for %s (run `wash up` on the host)", c.user))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
-	var t link.Ticket
-	if err := lk.Call(ctx, link.OpVerify, link.VerifyReq{Assertion: body, Remote: s.clientIP(r)}, &t); err != nil {
-		log.Printf("login %s from %s: manager rejected: %v", c.user, s.clientIP(r), err)
-		fail(w, 403, "shell manager rejected the passkey: "+err.Error())
+	var nonces [][]byte
+	if len(c.managers) > 1 {
+		for _, mn := range c.managers {
+			nonces = append(nonces, mn.nonce)
+		}
+	}
+	type result struct {
+		Host   string `json:"host"`
+		Ticket string `json:"ticket,omitempty"`
+		Err    string `json:"err,omitempty"`
+	}
+	results := make([]result, len(c.managers))
+	var wg sync.WaitGroup
+	for i, mn := range c.managers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			results[i].Host = mn.host
+			var t link.Ticket
+			if err := mn.peer.Call(ctx, link.OpVerify, link.VerifyReq{Assertion: body, Remote: s.clientIP(r), Nonces: nonces}, &t); err != nil {
+				log.Printf("login %s from %s: shell manager on %s rejected: %v", c.user, s.clientIP(r), mn.host, err)
+				results[i].Err = err.Error()
+				return
+			}
+			results[i].Ticket = t.Ticket
+		}()
+	}
+	wg.Wait()
+	var first string
+	var why []string
+	for _, res := range results {
+		if res.Ticket != "" && first == "" {
+			first = res.Ticket
+		}
+		if res.Err != "" {
+			why = append(why, res.Host+": "+res.Err)
+		}
+	}
+	if first == "" {
+		fail(w, 403, "shell manager rejected the passkey: "+strings.Join(why, "; "))
 		return
 	}
 	tok := newID()
@@ -785,7 +863,38 @@ func (s *Server) handleLoginFinish(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: s.basePath(r) + "/", HttpOnly: true,
 		Secure: strings.HasPrefix(origin, "https:"), SameSite: http.SameSiteStrictMode, MaxAge: int(sessionTTL.Seconds())})
 	log.Printf("login %s from %s with passkey %s", c.user, s.clientIP(r), passkey.ShortID(cred.ID))
-	writeJSON(w, 200, map[string]any{"user": c.user, "ticket": t.Ticket})
+	// ticket: the first washd's (pages from before multi-host use only that)
+	writeJSON(w, 200, map[string]any{"user": c.user, "ticket": first, "managers": results})
+}
+
+// managerNonces asks each of user's washds for a login nonce (in parallel);
+// a washd that does not answer is left out of this login.
+func (s *Server) managerNonces(ctx context.Context, user string) []managerNonce {
+	ls := s.linksFor(user)
+	out := make([]managerNonce, len(ls))
+	var wg sync.WaitGroup
+	for i, l := range ls {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			var mn link.Nonce
+			if err := l.peer.Call(ctx, link.OpChallenge, nil, &mn); err != nil || len(mn.Nonce) != passkey.NonceLen {
+				log.Printf("login %s: shell manager on %s gave no challenge: %v", user, l.host, err)
+				return
+			}
+			out[i] = managerNonce{host: l.host, peer: l.peer, nonce: mn.Nonce}
+		}()
+	}
+	wg.Wait()
+	keep := out[:0]
+	for _, mn := range out {
+		if mn.peer != nil {
+			keep = append(keep, mn)
+		}
+	}
+	return keep
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -798,9 +907,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{})
 }
 
-// handleBrowserWS hands an authenticated browser WebSocket to washd. Two
-// checks: this server's login cookie, and a ticket only washd can validate
-// (issued by washd after it verified the passkey assertion itself).
+// handleBrowserWS hands an authenticated browser WebSocket to washd (?host=
+// picks which of the user's washds; optional when there is one). Two
+// checks: this server's login cookie, and a ticket only that washd can
+// validate (issued by it after it verified the passkey assertion itself).
 func (s *Server) handleBrowserWS(w http.ResponseWriter, r *http.Request) {
 	user, ok := s.sessionUser(r)
 	c, err := websocket.Accept(w, r, nil) // same-origin only
@@ -811,13 +921,13 @@ func (s *Server) handleBrowserWS(w http.ResponseWriter, r *http.Request) {
 		_ = c.Close(4401, "not logged in")
 		return
 	}
-	lk := s.linkFor(user)
+	host, lk := s.linkFor(user, r.URL.Query().Get("host"))
 	if lk == nil {
 		_ = c.Close(4503, "no shell manager running for "+user)
 		return
 	}
 	sid := newID()
-	wt := &waiter{user: user, ch: make(chan *dialBack, 1)}
+	wt := &waiter{user: user, host: host, ch: make(chan *dialBack, 1)}
 	s.mu.Lock()
 	s.waiters[sid] = wt
 	s.mu.Unlock()
@@ -849,36 +959,50 @@ func (s *Server) handleBrowserWS(w http.ResponseWriter, r *http.Request) {
 
 // --- manager side ------------------------------------------------------------
 
-func (s *Server) managerUser(r *http.Request) (string, bool) {
+// manager resolves a washd's bearer token to its user and host name.
+func (s *Server) manager(r *http.Request) (user, host string, ok bool) {
 	tok, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok {
-		return "", false
+		return "", "", false
 	}
-	user, ok := s.db.ManagerUser(tok)
+	claim := r.Header.Get(link.HostHeader)
+	if !hostRE.MatchString(claim) {
+		claim = ""
+	}
+	user, host, ok = s.db.ManagerFor(tok, claim)
 	if ok && s.denied(user) {
 		log.Printf("refused manager link for %s: %v", user, userpolicy.ErrDenied)
-		return "", false
+		return "", "", false
 	}
-	return user, ok
+	return user, host, ok
 }
 
+// hostRE: a washd's host name (as enrolled, or reported by an older token).
+var hostRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$`)
+
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Code string }
+	var in struct{ Code, Host string }
 	if err := readJSON(r, &in); err != nil {
 		fail(w, 400, "bad request")
 		return
 	}
-	user, token, err := s.db.Enroll(strings.TrimSpace(in.Code), s.denied)
+	// Host: the washd's host name (an older wash sends none: its washd
+	// names itself on its first link)
+	if in.Host != "" && !hostRE.MatchString(in.Host) {
+		fail(w, 400, "bad host name")
+		return
+	}
+	user, token, err := s.db.Enroll(strings.TrimSpace(in.Code), in.Host, s.denied)
 	if err != nil {
 		fail(w, 403, err.Error())
 		return
 	}
-	log.Printf("manager enrolled for %s from %s", user, s.clientIP(r))
+	log.Printf("manager enrolled for %s on %q from %s", user, in.Host, s.clientIP(r))
 	writeJSON(w, 200, map[string]string{"user": user, "token": token})
 }
 
 func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.managerUser(r)
+	user, host, ok := s.manager(r)
 	if !ok {
 		http.Error(w, "bad manager token", http.StatusUnauthorized)
 		return
@@ -887,26 +1011,32 @@ func (s *Server) handleLink(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	p := link.NewPeer(c, s.managerHandler(user))
+	p := link.NewPeer(c, s.managerHandler(user, host))
 	s.mu.Lock()
-	old := s.links[user]
-	s.links[user] = p
+	if s.links[user] == nil {
+		s.links[user] = map[string]*link.Peer{}
+	}
+	old := s.links[user][host]
+	s.links[user][host] = p
 	s.mu.Unlock()
 	if old != nil {
 		old.Close("replaced by a new manager connection")
 	}
-	log.Printf("manager for %s connected from %s", user, s.clientIP(r))
+	log.Printf("manager for %s on %q connected from %s", user, host, s.clientIP(r))
 	_ = p.Run(context.Background())
 	s.mu.Lock()
-	if s.links[user] == p {
-		delete(s.links, user)
+	if s.links[user][host] == p {
+		delete(s.links[user], host)
+		if len(s.links[user]) == 0 {
+			delete(s.links, user)
+		}
 	}
 	s.mu.Unlock()
-	log.Printf("manager for %s disconnected", user)
+	log.Printf("manager for %s on %q disconnected", user, host)
 }
 
 func (s *Server) handleLinkConn(w http.ResponseWriter, r *http.Request) {
-	user, ok := s.managerUser(r)
+	user, host, ok := s.manager(r)
 	if !ok {
 		http.Error(w, "bad manager token", http.StatusUnauthorized)
 		return
@@ -914,7 +1044,7 @@ func (s *Server) handleLinkConn(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	wt := s.waiters[r.URL.Query().Get("sid")]
 	s.mu.Unlock()
-	if wt == nil || wt.user != user {
+	if wt == nil || wt.user != user || wt.host != host {
 		http.Error(w, "unknown connection", http.StatusNotFound)
 		return
 	}
@@ -931,13 +1061,13 @@ func (s *Server) handleLinkConn(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) managerHandler(user string) link.Handler {
+func (s *Server) managerHandler(user, host string) link.Handler {
 	return func(ctx context.Context, op string, data json.RawMessage) (any, error) {
 		var ref link.KeyRef
 		_ = json.Unmarshal(data, &ref)
 		switch op {
 		case link.OpInfo:
-			return link.Info{User: user, Version: s.cfg.Version}, nil
+			return link.Info{User: user, Host: host, Version: s.cfg.Version}, nil
 		case link.OpPlaybackPut:
 			return s.playbackPut(user, data)
 		case link.OpPlaybackDel:
@@ -982,7 +1112,20 @@ func (s *Server) managerHandler(user string) link.Handler {
 			if err := s.db.Revoke(user, ref.ID); err != nil {
 				return nil, err
 			}
-			log.Printf("passkey %s revoked by %s", ref.ID, user)
+			log.Printf("passkey %s revoked by %s on %q", ref.ID, user, host)
+			// the user's other washds drop it too (and close its browsers)
+			for _, l := range s.linksFor(user) {
+				if l.host == host {
+					continue
+				}
+				go func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					if err := l.peer.Call(ctx, link.OpKeyRevoked, ref, nil); err != nil {
+						log.Printf("passkey %s: tell %s on %q: %v", ref.ID, user, l.host, err)
+					}
+				}()
+			}
 			return struct{}{}, nil
 		}
 		return nil, fmt.Errorf("unknown op %q", op)

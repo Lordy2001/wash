@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 func home() string {
@@ -67,12 +68,17 @@ func RecordingFile(id string) string {
 // RecordingsFile lists the recordings and their state.
 func RecordingsFile() string { return filepath.Join(StateDir(), "recordings.json") }
 
-// RuntimeDir: $XDG_RUNTIME_DIR/wash (0700), or /tmp/wash-UID.
+// RuntimeDir: $XDG_RUNTIME_DIR/wash (0700), or /tmp/wash-UID. On macOS
+// (no XDG_RUNTIME_DIR, and a $TMPDIR that launchd jobs may not share with
+// login shells) it is ~/.local/state/wash/run, so washd as a LaunchAgent and
+// the CLI in a terminal find the same socket.
 func RuntimeDir() string {
 	dir := os.Getenv("WASH_RUNTIME_DIR")
 	if dir == "" {
 		if x := os.Getenv("XDG_RUNTIME_DIR"); x != "" {
 			dir = filepath.Join(x, "wash")
+		} else if runtime.GOOS == "darwin" {
+			dir = filepath.Join(StateDir(), "run")
 		} else {
 			dir = filepath.Join(os.TempDir(), fmt.Sprintf("wash-%d", os.Getuid()))
 		}
