@@ -233,3 +233,26 @@ test('playback terminal: clicks select text even in mouse mode, no clipboard wri
     Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true });
   }
 });
+
+test('Ctrl+click opens OSC 8 links only for http and https', async () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const opened = [];
+  const prev = window.open;
+  window.open = (u) => { opened.push(u); };
+  try {
+    const click = () => {
+      t.canvas.dispatch('mousedown', { button: 0, detail: 1, ctrlKey: true, clientX: 1, clientY: 1 });
+      window.dispatch('mouseup', { button: 0, clientX: 1, clientY: 1 });
+    };
+    t.write('\x1b]8;;javascript:alert(1)\x07evil\x1b]8;;\x07\r');
+    click();
+    assert.deepEqual(opened, [], 'javascript: link not opened');
+    t.write('\x1b]8;;https://example.com/x\x07good\x1b]8;;\x07\r');
+    click();
+    assert.deepEqual(opened, ['https://example.com/x']);
+  } finally {
+    window.open = prev;
+    t.dispose();
+  }
+});

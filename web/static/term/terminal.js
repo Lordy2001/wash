@@ -7,6 +7,7 @@
 import { Screen, DEFAULT_THEME } from './screen.js';
 import { CanvasRenderer } from './renderer.js';
 import { encodeKey, encodeMouse, encodePaste } from './input.js';
+import { safeURL } from './links.js';
 
 const DEFAULT_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 const SYNC_TIMEOUT = 150;
@@ -508,7 +509,8 @@ export class Terminal {
       const cs = this._clickStart;
       if (!this._sel.moved) {
         this._clearSelection();
-        if (cs && cs.link) window.open(cs.link, '_blank', 'noopener,noreferrer');
+        const url = cs && safeURL(cs.link);
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
       } else if (this.opts.copyOnSelect) {
         const t = this.getSelection();
         if (t) navigator.clipboard?.writeText(t).catch(() => {});
