@@ -388,9 +388,9 @@ purging pending keys after the TTL.
   has watched longest gets control. The controller sets the terminal size:
   watchers draw the controller's grid, with the font shrunk to fit their
   screen (never larger than their own font setting).
-* Phones get a smaller default font, the tabs get their own row that
-  scrolls sideways, and text size and sign out move into a ☰ menu at the
-  top right. The font size is chosen per device.
+* Text size and sign out are in the ☰ menu at the top right. Phones get a
+  smaller default font and the tabs get their own row that scrolls
+  sideways. The font size is chosen per device.
 * Touch screens get an extra-keys bar under the terminal: Esc, Tab, Ctrl,
   Alt, arrows, `| ~ - / :`. Ctrl and Alt are sticky (tap: the next key,
   tap again: locked, again: off) and also apply to the on-screen keyboard,

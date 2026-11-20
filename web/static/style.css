@@ -13,7 +13,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   border: 1px solid var(--line); border-radius: 10px; }
 @media (max-width: 480px) { .card { margin: 16px; } }
 header { position: relative; }
-#menu-btn { display: none; font-size: 18px; padding: 2px 10px; }
+#menu-btn { font-size: 18px; padding: 2px 10px; }
 #menu { position: absolute; top: 100%; right: 4px; z-index: 20; min-width: 220px; margin-top: 4px;
   display: flex; flex-direction: column; gap: 6px; padding: 10px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
@@ -29,9 +29,7 @@ header { position: relative; }
 @media (max-width: 700px) {
   header { flex-wrap: wrap; row-gap: 4px; }
   #tabs { order: 2; flex: 1 0 100%; padding-bottom: 2px; -webkit-overflow-scrolling: touch; }
-  #zoom-in, #zoom-out, #logout { display: none; }
   #who-user { display: none; }
-  #menu-btn { display: inline-block; }
   .tab { padding: 2px 0 2px 8px; gap: 0; flex: none; }
   .tab .name { max-width: 9em; overflow: hidden; text-overflow: ellipsis; }
   .tab .st { display: none; }

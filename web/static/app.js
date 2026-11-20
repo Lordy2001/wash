@@ -727,11 +727,8 @@ async function boot() {
   for (const b of document.querySelectorAll('.to-login')) b.onclick = (e) => { e.preventDefault(); show('login'); };
   $('#new-btn').onclick = () => newSession();
   $('#target').onchange = () => { store.set('wash.target', $('#target').value); renderWho(); };
-  $('#zoom-in').onclick = () => zoom(1);
-  $('#zoom-out').onclick = () => zoom(-1);
   const signOut = async () => { menu(false); teardown(); await api('api/logout', {}).catch(() => {}); show('login'); setMsg($('#login-msg'), 'Signed out.'); };
-  $('#logout').onclick = signOut;
-  // phones: text size and sign out live in the ☰ menu
+  // text size and sign out live in the ☰ menu
   $('#menu-btn').onclick = (e) => { e.stopPropagation(); menu($('#menu').hidden); };
   $('#m-zoom-in').onclick = () => zoom(1);
   $('#m-zoom-out').onclick = () => zoom(-1);
