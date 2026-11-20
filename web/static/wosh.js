@@ -6,6 +6,13 @@
 // channel straight to the wosh daemon (signaling through washd), or over a
 // second WebSocket that washd bridges to the daemon. Output and input carry
 // stream offsets, so reconnects replay missed output and resend unacked input.
+//
+// Embedding without washd: pass mgr = null and a signal function (see
+// WoshSession). The file has no imports and no build step.
+
+// VERSION of the browser client (this file and term/). Bump it on changes an
+// embedder must know about; term/index.js carries the same value.
+export const VERSION = '0.1.0';
 
 export const F = {
   OUTPUT: 0x6f, INPUT: 0x69, ACK: 0x61, RESIZE: 0x72, REDRAW: 0x52, PING: 0x70, PONG: 0x50,
@@ -287,7 +294,7 @@ export function serveStream(mgr, dc) {
   };
   const run = async () => {
     if (spec.resume) { raw(S.REFUSE, enc.encode('unknown stream')); return; }
-    if (spec.k !== 'build') {
+    if (spec.k !== 'build' || !mgr) {
       msg(S.ERR, enc.encode(`not supported by the wash browser client (${spec.k})`));
       msg(S.CLOSE);
       return;
@@ -312,11 +319,11 @@ export function serveStream(mgr, dc) {
 // --- transports ---------------------------------------------------------------
 
 // signal(sdp) -> answer sdp: through washd for its own sessions, through the
-// parent session's terminal for a chained hop.
-async function webrtcTransport(mgr, signal, onFrame, onDown) {
-  const h = mgr.hello;
-  const cfg = { iceServers: (h.ice || []).map((s) => ({ urls: s.urls, username: s.username, credential: s.credential })) };
-  if (h.relay) cfg.iceTransportPolicy = 'relay';
+// parent session's terminal for a chained hop, or through the embedder.
+// ice: [{urls, username, credential}]; relay: TURN only.
+async function webrtcTransport(mgr, { ice, relay }, signal, onFrame, onDown) {
+  const cfg = { iceServers: (ice || []).map((s) => ({ urls: s.urls, username: s.username, credential: s.credential })) };
+  if (relay) cfg.iceTransportPolicy = 'relay';
   const pc = new RTCPeerConnection(cfg);
   const dc = pc.createDataChannel('wosh');
   dc.binaryType = 'arraybuffer';
@@ -383,10 +390,24 @@ export class WoshSession {
   // term: Terminal (write, onData, onResize, cols, rows)
   // parent + key: a chained hop (`wosh HOST` inside the parent session),
   // reached directly over WebRTC and signaled through the parent's terminal.
-  constructor(mgr, id, term, { transport = 'auto', onState = () => {}, onExit = () => {}, parent = null, key = null } = {}) {
+  //
+  // Embedding without washd: mgr = null, and
+  //   signal({sdp, cols, rows, rx_out, cid, take}) -> Promise<answer sdp>
+  //     relays the offer to the daemon (e.g. POST to your server, which
+  //     writes {"t":"offer",...} to the daemon's control socket). Throw an
+  //     Error whose message contains "gone" to end the session for good.
+  //   cid: this client instance (stable across reconnects), for roles.
+  //   ice: ICE servers for the RTCPeerConnection (default: none, host
+  //     candidates only).
+  // The transport is WebRTC only (the bridge needs washd).
+  constructor(mgr, id, term, { transport = 'auto', onState = () => {}, onExit = () => {}, parent = null, key = null,
+    signal = null, cid = null, ice = null } = {}) {
     this.mgr = mgr; this.id = id; this.term = term;
-    this.mode = parent ? 'webrtc' : transport; this.onState = onState; this.onExit = onExit;
+    this.mode = parent || !mgr ? 'webrtc' : transport; this.onState = onState; this.onExit = onExit;
     this.parent = parent; this.key = key;
+    this.signalFn = signal; this.ice = ice;
+    this.cid = cid || (mgr && mgr.cid) || randomHex(8);
+    if (!mgr && !signal) throw new Error('WoshSession: pass a manager or a signal function');
     this.filter = new OSCFilter();
     this.token = null;          // from the daemon's info frame: proves chained-hop hellos
     this.waiters = new Map();   // hop id -> resolve(answer|err msg)
@@ -447,13 +468,17 @@ export class WoshSession {
   // signal sends an offer and returns the answer's SDP.
   signal(sdp) {
     const { cols, rows } = this.size();
-    if (!this.parent) {
-      return this.mgr.request({ t: 'offer', id: this.id, sdp, cols, rows, rx_out: this.rxOut, cid: this.mgr.cid, take: this.take }).then((a) => a.sdp);
+    if (!this.parent && this.signalFn) {
+      return Promise.resolve().then(() => this.signalFn({ sdp, cols, rows, rx_out: this.rxOut, cid: this.cid, take: this.take }));
     }
-    const h = this.mgr.hello;
+    if (!this.parent) {
+      return this.mgr.request({ t: 'offer', id: this.id, sdp, cols, rows, rx_out: this.rxOut, cid: this.cid, take: this.take }).then((a) => a.sdp);
+    }
+    const h = (this.mgr && this.mgr.hello) || {};
+    const ice = this.iceConfig();
     return this.parent.relay({
-      t: 'offer', id: this.id, key: this.key, sdp, ice: h.ice || [], relay: !!h.relay,
-      term: 'xterm-256color', cols, rows, rx_out: this.rxOut, user: h.user, cid: this.mgr.cid, join: !this.take,
+      t: 'offer', id: this.id, key: this.key, sdp, ice: ice.ice, relay: ice.relay,
+      term: 'xterm-256color', cols, rows, rx_out: this.rxOut, user: h.user, cid: this.cid, join: !this.take,
       env: { COLORTERM: 'truecolor', TERM_PROGRAM: 'wash' },
     }).then((a) => {
       if (a.t === 'err') throw new Error(a.err || 'hop refused');
@@ -475,12 +500,18 @@ export class WoshSession {
   // say sends a one-way message to a relay parked in this session (bye).
   say(msg) { this.input(encodeInput(msg)); }
 
+  // iceConfig: the embedder's ICE list, else washd's (hello).
+  iceConfig() {
+    const h = (this.mgr && this.mgr.hello) || {};
+    return { ice: this.ice || h.ice || [], relay: !!h.relay };
+  }
+
   async open() {
     const down = () => this.linkDown();
     const onFrame = (b) => this.frame(b);
     if (this.mode === 'webrtc' || (this.mode === 'auto' && !this.preferBridge)) {
       try {
-        return await webrtcTransport(this.mgr, (sdp) => this.signal(sdp), onFrame, down);
+        return await webrtcTransport(this.mgr, this.iceConfig(), (sdp) => this.signal(sdp), onFrame, down);
       } catch (e) {
         if (this.mode === 'webrtc') throw e;
         console.warn('wash: WebRTC failed, using the WebSocket bridge:', e.message);
