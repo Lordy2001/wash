@@ -463,6 +463,7 @@ export class WoshSession {
         this.startPing();
         return;
       } catch (e) {
+        if (this.closed || this.exited) return; // closed while connecting: nothing to retry
         this.onState({ state: 'down', error: e.message });
         if (/no session|session not found|gone/.test(e.message)) { this.exited = true; this.onExit(null, e.message); return; }
         if (this.parent && /signal timeout/.test(e.message) && ++this.sigTimeouts >= 2) {
@@ -476,8 +477,18 @@ export class WoshSession {
     }
   }
 
-  // signal sends an offer and returns the answer's SDP.
+  // signal sends an offer and returns the answer's SDP. An answer that
+  // arrives after close() is refused, so the RTCPeerConnection never opens:
+  // a late peer with this cid would replace the one a new WoshSession on
+  // the same cid (a resumed pane, a reload) has just opened.
   signal(sdp) {
+    return this.sendOffer(sdp).then((a) => {
+      if (this.closed || this.exited) throw new Error('closed while connecting');
+      return a;
+    });
+  }
+
+  sendOffer(sdp) {
     const { cols, rows } = this.size();
     if (!this.parent && this.signalFn) {
       const { ice, relay } = this.iceConfig();
@@ -525,10 +536,13 @@ export class WoshSession {
   say(msg) { this.input(encodeInput(msg)); }
 
   // iceConfig: the embedder's ICE list and relay flag, else washd's (hello).
+  // urls goes out as a list: the daemon rejects a bare string, which
+  // RTCPeerConnection would take.
   iceConfig() {
-    if (this.ice) return { ice: this.ice, relay: !!this.iceRelay };
     const h = (this.mgr && this.mgr.hello) || {};
-    return { ice: h.ice || [], relay: !!h.relay };
+    const ice = this.ice || h.ice || [];
+    const relay = this.ice ? !!this.iceRelay : !!h.relay;
+    return { ice: ice.map((s) => ({ ...s, urls: Array.isArray(s.urls) ? s.urls : [s.urls] })), relay };
   }
 
   async open() {

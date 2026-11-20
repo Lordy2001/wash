@@ -51,6 +51,16 @@ test('embedder ICE servers win over washd\'s, with their own relay flag', () => 
   assert.deepEqual(new WoshSession(mgr, 'abc', term).iceConfig(), { ice: mgr.hello.ice, relay: true });
 });
 
+test('embedder ICE urls given as a string go to the daemon as a list', async () => {
+  const offers = [];
+  const ws = new WoshSession(null, 'abc', { write() {} }, {
+    ice: [{ urls: 'stun:example.invalid' }],
+    signal: async (o) => { offers.push(o); return 'A'; },
+  });
+  await ws.signal('x');
+  assert.deepEqual(offers[0].ice, [{ urls: ['stun:example.invalid'] }]);
+});
+
 test('signal option: a non-Error rejection or no answer still fails cleanly', async () => {
   let exit = null;
   const ws = new WoshSession(null, 'abc', { write() {} }, {
@@ -75,6 +85,21 @@ test('close() while connecting drops the link that came up', async () => {
   assert.equal(closed, 1);
   assert.equal(ws.tr, null);
   assert.equal(ws.pingTimer, null);
+});
+
+test('an answer that arrives after close() is refused, with no retry', async () => {
+  const states = [];
+  let offers = 0;
+  const ws = new WoshSession(null, 'abc', { write() {} }, {
+    signal: async () => { offers++; ws.close(); return 'A'; }, // e.g. the pane was hidden mid-offer
+    onState: (s) => states.push(s.state),
+  });
+  await assert.rejects(ws.signal('x'), /closed while connecting/);
+  ws.closed = false;
+  ws.open = async () => { await ws.signal('x'); throw new Error('unreachable'); };
+  await ws.connect();
+  assert.equal(offers, 2);
+  assert.deepEqual(states, ['connecting'], 'no "down" state and no retry once closed');
 });
 
 test('a session needs a manager or a signal function', () => {
