@@ -233,3 +233,16 @@ test('playback terminal: clicks select text even in mouse mode, no clipboard wri
     Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true });
   }
 });
+
+test('write with replies: false draws but does not answer queries', async () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  t.write('old\x1b[5n\x1b[c\x1b[>q\x1b]11;?\x07', { replies: false });
+  assert.deepEqual(sent, [], 'replayed queries stay unanswered');
+  assert.ok(t.screen.buf.lines[0].text().startsWith('old'), 'replayed text is drawn');
+  t.write('\x1b[5n');
+  assert.deepEqual(sent, ['\x1b[0n'], 'live queries are answered');
+  t.dispose();
+});

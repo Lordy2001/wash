@@ -59,7 +59,7 @@ export class Terminal {
 
     const s = new Screen(80, 24, { scrollback: this.opts.scrollback, decoder: browserImageDecoder, theme: this.opts.theme });
     this.screen = s;
-    s.onReply = (str) => this._emit(str);
+    s.onReply = (str) => { if (!this._muteReplies) this._emit(str); };
     s.onTitle = (t) => this.onTitle && this.onTitle(t);
     s.onBell = () => this.onBell && this.onBell();
     s.onClipboard = (text) => {
@@ -119,11 +119,15 @@ export class Terminal {
 
   // ---- public API --------------------------------------------------------------
 
-  write(data) {
+  // write(data, {replies: false}) draws data without answering the queries
+  // in it (DSR, DA, ...): for replayed output whose queries were answered
+  // when they were new.
+  write(data, { replies = true } = {}) {
     if (this._disposed) return;
     const str = typeof data === 'string' ? data : this.utf8.decode(data, { stream: true });
     if (!str) return;
-    this.screen.write(str);
+    this._muteReplies = !replies;
+    try { this.screen.write(str); } finally { this._muteReplies = false; }
     if (this.screen.viewOffset) { this.screen.viewOffset = 0; this.screen.dirtyAll = true; }
     this._schedule();
   }
