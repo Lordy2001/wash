@@ -356,7 +356,7 @@ Ctrl+Shift+T opens a new session, Ctrl+Shift+PgUp/PgDn switch tabs.
 
 ```sh
 go test ./...                              # includes internal/e2e (needs ../wosh/bin/wosh or $WASH_TEST_WOSH)
-node --test web/test/term/*.test.mjs web/test/wosh/*.test.mjs
+node --test web/test/term/*.test.mjs web/test/wash/*.test.mjs web/test/wosh/*.test.mjs
 ```
 
 The e2e test runs wash-web and washd with real wosh daemons, using a
