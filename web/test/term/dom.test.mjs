@@ -274,6 +274,7 @@ test('write with replies: false does not set the clipboard (OSC 52)', () => {
     assert.deepEqual(copied, ['new'], 'a live yank sets it');
   } finally {
     Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true });
+    t.dispose();
   }
 });
 
