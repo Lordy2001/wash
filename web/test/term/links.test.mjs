@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { safeURL, urlAt } from '../../static/term/links.js';
+import { safeURL, urlAt, urlRangeAt } from '../../static/term/links.js';
 
 test('safeURL opens only http and https', () => {
   assert.equal(safeURL('https://example.com/a?b=1#c'), 'https://example.com/a?b=1#c');
@@ -35,4 +35,11 @@ test('urlAt trims a long run of closing brackets in linear time', () => {
   const t0 = performance.now();
   assert.equal(urlAt(s, 3), 'https://x.io/');
   assert.ok(performance.now() - t0 < 2000, 'not quadratic');
+});
+
+test('urlRangeAt gives the trimmed URL and its index range', () => {
+  const t = 'go (https://a.b/c_(d)). now';
+  assert.deepEqual(urlRangeAt(t, 6), { url: 'https://a.b/c_(d)', start: 4, end: 21 });
+  assert.equal(urlRangeAt(t, 21), null, 'the closing paren after it');
+  assert.equal(urlRangeAt('javascript:x', 2), null);
 });

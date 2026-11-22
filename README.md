@@ -342,8 +342,10 @@ replace it. It supports xterm-style VT, 256-color and truecolor SGR (`;` and
 `:` forms), the alternate screen, scroll regions, wide characters and emoji,
 box drawing drawn as shapes, mouse modes 1000/1002/1003/1006, bracketed
 paste, focus events, copy on select, Ctrl+C (with a selection) / Ctrl+V, synchronized output, OSC 52/10/11, links (a click, a tap or Ctrl/Cmd+click opens
-an OSC 8 hyperlink or a plain URL, http and https only. While a program has
-mouse reporting on, it gets the click; use Ctrl/Cmd+Shift+click. The
+an OSC 8 hyperlink or a plain URL, http and https only, and a link that a
+click would open is underlined with a pointer cursor on hover. While a
+program has mouse reporting on, a plain click goes to the program and
+Ctrl/Cmd+click still opens the link (hold Ctrl/Cmd to see it). The
 `clickOpensLinks: false` option limits it to Ctrl/Cmd+click), and the **kitty
 graphics protocol**: direct transmission, PNG, RGB(A), zlib, chunking,
 place, delete and query. `kitten icat`, `timg`, `chafa -f kitty` and similar
