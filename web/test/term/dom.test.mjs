@@ -233,3 +233,47 @@ test('playback terminal: clicks select text even in mouse mode, no clipboard wri
     Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true });
   }
 });
+
+test('write with replies: false draws but does not answer queries', async () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  t.write('old\x1b[5n\x1b[c\x1b[>q\x1b]11;?\x07', { replies: false });
+  assert.deepEqual(sent, [], 'replayed queries stay unanswered');
+  assert.ok(t.screen.buf.lines[0].text().startsWith('old'), 'replayed text is drawn');
+  t.write('\x1b[5n');
+  assert.deepEqual(sent, ['\x1b[0n'], 'live queries are answered');
+  t.dispose();
+});
+
+test('a write from a callback during a quiet write keeps the rest quiet', () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  t.onTitle = () => t.write('[t]');
+  t.onBell = () => t.write('!');
+  t.write('\x1b]0;title\x07\x1b[5n\x07\x1b[c', { replies: false });
+  assert.deepEqual(sent, [], 'queries after the nested writes stay unanswered');
+  t.write('\x1b[5n');
+  assert.deepEqual(sent, ['\x1b[0n'], 'a live write still answers');
+  t.dispose();
+});
+
+test('write with replies: false does not set the clipboard (OSC 52)', () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const copied = [];
+  const nav = globalThis.navigator;
+  Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async (s) => { copied.push(s); } } }, configurable: true });
+  try {
+    t.write('\x1b]52;c;b2xk\x07', { replies: false });
+    assert.deepEqual(copied, [], 'a replayed yank leaves the clipboard alone');
+    t.write('\x1b]52;c;bmV3\x07');
+    assert.deepEqual(copied, ['new'], 'a live yank sets it');
+  } finally {
+    Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true });
+    t.dispose();
+  }
+});

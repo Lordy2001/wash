@@ -424,6 +424,11 @@ export class WoshSession {
     this.synced = false;        // got this link's first ack
     this.everSynced = false;
     this.rxOut = 0;              // output received up to
+    // output below this offset was in the ring before this tab first
+    // connected: replay (no query replies). Set by the info frame of each
+    // link while this tab has no output yet (rx_out 0), then kept across
+    // reconnects.
+    this.replayEnd = 0;
     this.inBase = 0;             // input acknowledged up to
     this.inBuf = new Uint8Array(0); // unacknowledged input, starting at inBase
     this.tr = null; this.closed = false; this.exited = false;
@@ -632,8 +637,19 @@ export class WoshSession {
         if (end <= this.rxOut) return;
         if (off < this.rxOut) data = data.subarray(this.rxOut - off);
         this.rxOut = end;
-        const { out, msgs } = this.filter.write(data);
-        if (out.length) this.term.write(out);
+        // output below replayEnd was in the ring before this tab connected:
+        // its terminal queries were answered back then, so draw it without
+        // replying. Output made while a resumed link was down still answers.
+        const quiet = Math.max(0, Math.min(this.replayEnd - (end - data.length), data.length));
+        const msgs = [];
+        for (const [part, replies] of [[data.subarray(0, quiet), false], [data.subarray(quiet), true]]) {
+          if (!part.length) continue;
+          const r = this.filter.write(part);
+          if (r.out.length) this.term.write(r.out, { replies });
+          // replayed signals are stale (answers to old offers, typeahead that
+          // was delivered then); only a hello can matter (a relay still parked)
+          for (const m of r.msgs) if (replies || m.t === 'hello') msgs.push(m);
+        }
         for (const m of msgs) {
           if ((m.t === 'answer' || m.t === 'err') && this.waiters.has(m.id)) this.waiters.get(m.id)(m);
           else this.onSignal(m);
@@ -644,6 +660,10 @@ export class WoshSession {
         try {
           const c = JSON.parse(new TextDecoder().decode(b.subarray(1)));
           if (c.op === 'info' && c.token) this.token = c.token;
+          // info comes before any output on a link, so rxOut is where it
+          // starts. With no output yet, the newest info counts: a controller
+          // may have answered more output since an earlier link's info.
+          if (c.op === 'info' && this.rxOut === 0) this.replayEnd = c.out > 0 ? c.out : 0;
           if (c.op === 'role') this.setRole(c.role);
           if (c.op === 'size' && c.cols > 0 && c.rows > 0) { this.shared = { cols: c.cols, rows: c.rows }; this.layout(); }
         } catch {}
