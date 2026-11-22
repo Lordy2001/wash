@@ -4,9 +4,10 @@
 //   t.onData = (u8) => ...; t.onResize = (cols, rows) => ...;
 //   t.write(u8 | string);
 
-import { Screen, DEFAULT_THEME } from './screen.js';
+import { Screen, DEFAULT_THEME, HIDDEN } from './screen.js';
 import { CanvasRenderer } from './renderer.js';
 import { encodeKey, encodeMouse, encodePaste } from './input.js';
+import { safeURL, urlAt } from './links.js';
 
 const DEFAULT_FONT = '"JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace';
 const SYNC_TIMEOUT = 150;
@@ -515,7 +516,8 @@ export class Terminal {
       const cs = this._clickStart;
       if (!this._sel.moved) {
         this._clearSelection();
-        if (cs && cs.link) window.open(cs.link, '_blank', 'noopener,noreferrer');
+        const url = cs && safeURL(cs.link);
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
       } else if (this.opts.copyOnSelect) {
         const t = this.getSelection();
         if (t) navigator.clipboard?.writeText(t).catch(() => {});
@@ -605,7 +607,34 @@ export class Terminal {
     const l = this.screen.lineAt(pos.abs);
     if (!l || pos.cell >= l.cols) return null;
     const id = l.ln[pos.cell];
-    return id ? this.screen.links.get(id) || null : null;
+    // an OSC 8 target that may not be opened, or one already forgotten,
+    // falls back to a plain URL in the text under the click
+    const url = id ? safeURL(this.screen.links.get(id)) : null;
+    return url || this._plainLinkAt(pos);
+  }
+
+  // _plainLinkAt: a bare http(s) URL under pos, also when it wraps across
+  // lines (soft wraps only).
+  _plainLinkAt(pos) {
+    const s = this.screen;
+    let start = pos.abs;
+    for (let n = 0; n < 32; n++) {
+      const prev = s.lineAt(start - 1);
+      if (!prev || !prev.wrapped) break;
+      start--;
+    }
+    let text = '', at = -1;
+    for (let abs = start, n = 0; n < 64; abs++, n++) {
+      const l = s.lineAt(abs);
+      if (!l) break;
+      for (let c = 0; c < l.cols; c++) {
+        if (l.wd[c] === 0) continue; // second half of a wide character
+        if (abs === pos.abs && c <= pos.cell) at = text.length;
+        text += l.fl[c] & HIDDEN ? ' ' : l.ch[c]; // concealed (SGR 8) text is not shown, so not linked
+      }
+      if (!l.wrapped || abs >= pos.abs + 32) break;
+    }
+    return at < 0 ? null : urlAt(text, at);
   }
 
   // ---- selection -------------------------------------------------------------------
