@@ -377,3 +377,86 @@ test('a tap on a link opens it without the keyboard; a tap elsewhere focuses', (
     t.dispose();
   }
 });
+
+test('hover: pointer cursor and underline over plain URLs and OSC 8 links', async () => {
+  const el = new El('div'); // 100 x 20 cells of 9 x 18 px
+  const t = new Terminal(el, { fontSize: 15 });
+  const at = (col, row, mods = {}) => t.canvas.dispatch('mousemove', { clientX: col * 9 + 1, clientY: row * 18 + 1, ...mods });
+  try {
+    t.write('see https://example.com/docs. ok\r\n');
+    t.write('\x1b]8;;https://example.com/x\x07click here\x1b]8;;\x07 after\r\n');
+    flush();
+    at(10, 0);
+    assert.equal(t.canvas.style.cursor, 'pointer');
+    assert.deepEqual(t.renderer.hover, { url: 'https://example.com/docs', start: { abs: 0, col: 4 }, end: { abs: 0, col: 28 } });
+    flush(); // draws the underline without error
+    at(1, 0);
+    assert.equal(t.canvas.style.cursor, '');
+    assert.equal(t.renderer.hover, null);
+    at(3, 1); // inside the OSC 8 text
+    assert.deepEqual(t.renderer.hover, { url: 'https://example.com/x', start: { abs: 1, col: 0 }, end: { abs: 1, col: 10 } });
+    at(12, 1); // " after" is not part of it
+    assert.equal(t.renderer.hover, null);
+    at(10, 0);
+    t.canvas.dispatch('mouseleave', {});
+    assert.equal(t.renderer.hover, null);
+    assert.equal(t.canvas.style.cursor, '');
+    // new output under the pointer: the hover follows on the next frame
+    at(10, 0);
+    t.write('\x1b[2J\x1b[H');
+    flush();
+    assert.equal(t.renderer.hover, null, 'cleared screen: no link under the pointer');
+  } finally {
+    t.dispose();
+  }
+});
+
+test('mouse reporting: hover and click need Ctrl/Cmd; a plain click goes to the program', async () => {
+  const el = new El('div');
+  const t = new Terminal(el, { fontSize: 15 });
+  const sent = [];
+  t.onData = (u8) => sent.push(new TextDecoder().decode(u8));
+  const opened = [];
+  const prev = window.open;
+  window.open = (u) => { opened.push(u); };
+  const x = 10 * 9 + 1, y = 1;
+  const click = (mods) => {
+    t.canvas.dispatch('mousedown', { button: 0, detail: 1, clientX: x, clientY: y, ...mods });
+    window.dispatch('mouseup', { button: 0, clientX: x, clientY: y, ...mods });
+  };
+  try {
+    t.write('see https://example.com/docs. ok\r\n');
+    t.write('\x1b[?1000h\x1b[?1006h'); // a program (Claude Code, vim) reports the mouse
+    t.canvas.dispatch('mousemove', { clientX: x, clientY: y });
+    assert.equal(t.renderer.hover, null, 'no hover without Ctrl: a click goes to the program');
+    window.dispatch('keydown', { key: 'Control', ctrlKey: true });
+    assert.equal(t.renderer.hover?.url, 'https://example.com/docs', 'pressing Ctrl shows the link');
+    assert.equal(t.canvas.style.cursor, 'pointer');
+    window.dispatch('keyup', { key: 'Control', ctrlKey: false });
+    assert.equal(t.renderer.hover, null, 'releasing Ctrl hides it');
+    t.canvas.dispatch('mousemove', { clientX: x, clientY: y, metaKey: true });
+    assert.equal(t.renderer.hover?.url, 'https://example.com/docs', 'Cmd works too');
+
+    sent.length = 0;
+    click({});
+    assert.deepEqual(opened, [], 'a plain click does not open');
+    assert.deepEqual(sent, ['\x1b[<0;11;1M', '\x1b[<0;11;1m'], 'a plain click is reported');
+
+    sent.length = 0;
+    click({ ctrlKey: true });
+    assert.deepEqual(opened, ['https://example.com/docs'], 'Ctrl+click opens');
+    assert.deepEqual(sent, [], 'and is not reported');
+
+    click({ metaKey: true });
+    assert.deepEqual(opened.length, 2, 'Cmd+click opens');
+
+    sent.length = 0;
+    t.canvas.dispatch('mousedown', { button: 0, detail: 1, clientX: 1, clientY: 1, ctrlKey: true });
+    window.dispatch('mouseup', { button: 0, clientX: 1, clientY: 1, ctrlKey: true });
+    assert.equal(opened.length, 2, 'Ctrl+click on plain text opens nothing');
+    assert.equal(sent.length, 2, 'and is reported');
+  } finally {
+    window.open = prev;
+    t.dispose();
+  }
+});

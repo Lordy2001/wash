@@ -33,12 +33,22 @@ function trimURL(s) {
   return s.slice(0, end);
 }
 
-// urlAt finds a plain http(s) URL in text that covers index i, or null.
-export function urlAt(text, i) {
+// urlRangeAt finds a plain http(s) URL in text that covers index i:
+// {url, start, end} (end exclusive, indexes into text), or null.
+export function urlRangeAt(text, i) {
   for (const m of text.matchAll(URL_RE)) {
     const s = trimURL(m[0]);
-    if (i >= m.index && i < m.index + s.length) return safeURL(s);
+    if (i >= m.index && i < m.index + s.length) {
+      const url = safeURL(s);
+      return url ? { url, start: m.index, end: m.index + s.length } : null;
+    }
     if (m.index > i) break;
   }
   return null;
+}
+
+// urlAt finds a plain http(s) URL in text that covers index i, or null.
+export function urlAt(text, i) {
+  const r = urlRangeAt(text, i);
+  return r ? r.url : null;
 }
